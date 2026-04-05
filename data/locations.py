@@ -27,10 +27,12 @@ LOCATIONS = {
         "cities": {
             "Kairo": {
                 "base_url": "https://www.goethe.de/ins/eg/de/sta/kai/prf",
+                "awe_url": "https://awe.goethe.de/awe?INST=GI-Kairo",
                 "note": "Kairo (Dokki) und Hurghada",
             },
             "Alexandria": {
                 "base_url": "https://www.goethe.de/ins/eg/de/sta/alx/prf",
+                "awe_url": "https://awe.goethe.de/awe?INST=GI-Alexandria",
                 "note": "Alexandria",
             },
         },
@@ -98,12 +100,22 @@ def get_exam_urls(country_code: str, city: str) -> list[dict]:
     base = city_info["base_url"]
     urls = []
 
-    # Main exam overview page
-    urls.append({
-        "url": f"{base}.html",
-        "exam_type": "ALL",
-        "page_type": "overview",
-    })
+    # AWE portal (exam dates & results) — most reliable source
+    awe_url = city_info.get("awe_url")
+    if awe_url:
+        urls.append({
+            "url": awe_url,
+            "exam_type": "ALL",
+            "page_type": "awe_portal",
+        })
+
+    # Individual exam type pages (.cfm extension)
+    for exam_type, suffix in EXAM_URL_SUFFIXES.items():
+        urls.append({
+            "url": f"{base}/{suffix}.cfm",
+            "exam_type": exam_type,
+            "page_type": "exam_detail",
+        })
 
     # Registration/dates page
     urls.append({
@@ -112,13 +124,12 @@ def get_exam_urls(country_code: str, city: str) -> list[dict]:
         "page_type": "registration",
     })
 
-    # Individual exam type pages (try both .html and .cfm)
-    for exam_type, suffix in EXAM_URL_SUFFIXES.items():
-        urls.append({
-            "url": f"{base}/{suffix}.html",
-            "exam_type": exam_type,
-            "page_type": "exam_detail",
-        })
+    # Main exam overview page (least useful, last priority)
+    urls.append({
+        "url": f"{base}.html",
+        "exam_type": "ALL",
+        "page_type": "overview",
+    })
 
     return urls
 
