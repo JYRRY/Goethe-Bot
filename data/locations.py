@@ -1,46 +1,137 @@
+"""
+Goethe-Institut location data with correct URL patterns.
+
+URL structure discovered from goethe.de:
+- Egypt has city-specific pages: /ins/eg/de/sta/{city_code}/prf.html
+- Other countries use: /ins/{country}/de/spr/prf.html
+- Each exam type has a subpage: .../prf/gzb1.html, .../prf/gzb2.cfm, etc.
+- Registration pages: .../prf/anm.html
+"""
+
+# Exam type URL suffixes used by Goethe-Institut
+EXAM_URL_SUFFIXES = {
+    "A1": "gzsd1",   # Goethe-Zertifikat Start Deutsch 1
+    "A2": "gzsd2",   # Goethe-Zertifikat Start Deutsch 2
+    "B1": "gzb1",    # Goethe-Zertifikat B1
+    "B2": "gzb2",    # Goethe-Zertifikat B2
+    "C1": "gzc1",    # Goethe-Zertifikat C1
+    "C2": "gzc2",    # Goethe-Zertifikat C2
+}
+
+EXAM_TYPES = ["A1", "A2", "B1", "B2", "C1", "C2"]
+
+# Each city has its own base URL for exams
 LOCATIONS = {
     "eg": {
         "name": "Ägypten",
         "cities": {
-            "Alexandria": "alexandria",
-            "Dokki": "dokki",
-            "Hurghada": "hurghada",
+            "Kairo": {
+                "base_url": "https://www.goethe.de/ins/eg/de/sta/kai/prf",
+                "note": "Kairo (Dokki) und Hurghada",
+            },
+            "Alexandria": {
+                "base_url": "https://www.goethe.de/ins/eg/de/sta/alx/prf",
+                "note": "Alexandria",
+            },
         },
     },
     "ma": {
         "name": "Marokko",
         "cities": {
-            "Casablanca": "casablanca",
-            "Rabat": "rabat",
+            "Casablanca": {
+                "base_url": "https://www.goethe.de/ins/ma/de/spr/prf",
+                "note": "Casablanca",
+            },
+            "Rabat": {
+                "base_url": "https://www.goethe.de/ins/ma/de/spr/prf",
+                "note": "Rabat",
+            },
         },
     },
     "dz": {
         "name": "Algerien",
         "cities": {
-            "Algier": "algier",
+            "Algier": {
+                "base_url": "https://www.goethe.de/ins/dz/de/spr/prf",
+                "note": "Algier",
+            },
         },
     },
     "sa": {
         "name": "Saudi-Arabien",
         "cities": {
-            "Riad": "riad",
-            "Dschidda": "dschidda",
+            "Riad": {
+                "base_url": "https://www.goethe.de/ins/sa/de/spr/prf",
+                "note": "Riad",
+            },
+            "Dschidda": {
+                "base_url": "https://www.goethe.de/ins/sa/de/spr/prf",
+                "note": "Dschidda",
+            },
         },
     },
     "lb": {
         "name": "Libanon",
         "cities": {
-            "Beirut": "beirut",
+            "Beirut": {
+                "base_url": "https://www.goethe.de/ins/lb/de/spr/prf",
+                "note": "Beirut",
+            },
         },
     },
 }
 
-EXAM_TYPES = ["A1", "A2", "B1", "B2", "C1", "C2"]
+
+def get_exam_urls(country_code: str, city: str) -> list[dict]:
+    """
+    Build all exam page URLs for a given country and city.
+    Returns list of dicts with: url, exam_type, page_type
+    """
+    country = LOCATIONS.get(country_code)
+    if not country:
+        return []
+
+    city_info = country["cities"].get(city)
+    if not city_info:
+        return []
+
+    base = city_info["base_url"]
+    urls = []
+
+    # Main exam overview page
+    urls.append({
+        "url": f"{base}.html",
+        "exam_type": "ALL",
+        "page_type": "overview",
+    })
+
+    # Registration/dates page
+    urls.append({
+        "url": f"{base}/anm.html",
+        "exam_type": "ALL",
+        "page_type": "registration",
+    })
+
+    # Individual exam type pages (try both .html and .cfm)
+    for exam_type, suffix in EXAM_URL_SUFFIXES.items():
+        urls.append({
+            "url": f"{base}/{suffix}.html",
+            "exam_type": exam_type,
+            "page_type": "exam_detail",
+        })
+
+    return urls
 
 
-def get_exam_url(country_code: str) -> str:
-    """Build the Goethe-Institut exam dates URL for a given country."""
-    return f"https://www.goethe.de/ins/{country_code}/de/prf/ter.html"
+def get_main_exam_url(country_code: str, city: str) -> str:
+    """Get the main exam overview page URL."""
+    country = LOCATIONS.get(country_code)
+    if not country:
+        return ""
+    city_info = country["cities"].get(city)
+    if not city_info:
+        return ""
+    return f"{city_info['base_url']}.html"
 
 
 def get_country_names() -> dict[str, str]:

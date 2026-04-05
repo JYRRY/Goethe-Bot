@@ -3,240 +3,240 @@ import re
 
 logger = logging.getLogger(__name__)
 
-
 # Exam level patterns
 EXAM_PATTERN = re.compile(
     r"\b(?:Goethe-Zertifikat\s+)?(A1|A2|B1|B2|C1|C2)\b", re.IGNORECASE
 )
 
-# Date patterns (DD.MM.YYYY or YYYY-MM-DD or DD. Month YYYY)
+# Date patterns
 DATE_PATTERN = re.compile(
     r"\b(\d{1,2}\.\d{1,2}\.\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}\.\s*(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s+\d{4})\b"
 )
 
-# Time pattern (HH:MM)
+# Time pattern
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2})\s*(?:Uhr)?\b")
 
-# Availability keywords
+# Price pattern (indicates an active exam offering)
+PRICE_PATTERN = re.compile(r"(\d+[\.,]?\d*)\s*(?:EUR|€|EGP|MAD|DZD|SAR|USD|LBP)")
+
 AVAILABLE_KEYWORDS = [
     "verfügbar", "available", "freie plätze", "free places",
     "anmelden", "register", "buchen", "book", "plätze frei",
     "zur anmeldung", "jetzt anmelden", "noch plätze",
+    "termin", "nächster termin", "prüfungstermin",
 ]
 
 UNAVAILABLE_KEYWORDS = [
     "ausgebucht", "fully booked", "keine plätze", "no places",
     "warteliste", "waiting list", "sold out", "nicht verfügbar",
-    "belegt", "abgesagt", "cancelled",
+    "belegt", "abgesagt", "cancelled", "derzeit keine",
 ]
 
 
+def _extract_links(html: str) -> list[tuple[str, str]]:
+    """Extract (href, text) pairs from HTML."""
+    pattern = re.compile(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.DOTALL)
+    results = []
+    for href, text in pattern.findall(html):
+        clean_text = re.sub(r"<[^>]+>", "", text).strip()
+        if not href.startswith("http") and href.startswith("/"):
+            href = f"https://www.goethe.de{href}"
+        results.append((href, clean_text))
+    return results
+
+
+def _clean_html_to_text(html: str) -> str:
+    """Strip HTML tags and clean up text."""
+    text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "\n", text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&#\d+;", "", text)
+    text = re.sub(r"&[a-z]+;", "", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+
 def parse_appointments(
-    html_content: str, country_code: str, target_cities: list[str]
+    html_content: str,
+    country_code: str,
+    city: str,
+    exam_type_filter: str = "ALL",
 ) -> list[dict]:
     """
-    Parse Goethe-Institut exam page HTML and extract appointments.
-    Uses multiple strategies to find appointment data.
+    Parse a Goethe-Institut page for exam appointments.
+
+    Args:
+        html_content: Raw HTML of the page
+        country_code: Country ISO code
+        city: City name
+        exam_type_filter: "ALL" or specific type like "B2"
     """
     if not html_content:
-        logger.warning(f"Leerer HTML-Inhalt für {country_code}")
         return []
 
-    logger.info(f"Parse HTML für {country_code}: {len(html_content)} Zeichen")
+    logger.info(
+        f"Parse: {city} ({country_code}), Filter={exam_type_filter}, "
+        f"{len(html_content)} Zeichen"
+    )
 
     appointments = []
 
-    # Remove script and style tags
-    clean_html = re.sub(r"<script[^>]*>.*?</script>", "", html_content, flags=re.DOTALL)
-    clean_html = re.sub(r"<style[^>]*>.*?</style>", "", clean_html, flags=re.DOTALL)
-
-    # Extract all links with href for booking URLs
-    link_pattern = re.compile(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', re.DOTALL)
-    links = link_pattern.findall(clean_html)
+    # Extract links (for booking URLs)
+    links = _extract_links(html_content)
     booking_links = {}
-    all_links_with_exam = []
-
     for href, text in links:
-        clean_text = re.sub(r"<[^>]+>", "", text).strip()
-        for exam_match in EXAM_PATTERN.finditer(clean_text):
-            exam_type = exam_match.group(1).upper()
-            if not href.startswith("http"):
-                href = f"https://www.goethe.de{href}"
-            all_links_with_exam.append((exam_type, href, clean_text))
-            if any(kw in href.lower() for kw in ["anmeld", "book", "regist", "kurs"]):
-                booking_links[exam_type] = href
+        combined = f"{href} {text}".lower()
+        if any(kw in combined for kw in ["anmeld", "book", "regist", "kurs", "webshop"]):
+            for match in EXAM_PATTERN.finditer(text):
+                booking_links[match.group(1).upper()] = href
 
-    if all_links_with_exam:
-        logger.info(f"Links mit Prüfungstyp gefunden: {len(all_links_with_exam)}")
-        for exam_type, href, text in all_links_with_exam[:5]:
-            logger.debug(f"  Link: {exam_type} -> {href} ({text[:50]})")
+    # Also check for generic registration links
+    generic_booking_url = ""
+    for href, text in links:
+        combined = f"{href} {text}".lower()
+        if any(kw in combined for kw in ["anmeldung", "registration", "webshop", "buchen"]):
+            generic_booking_url = href
+            break
 
-    # Clean HTML to text
-    text_content = re.sub(r"<[^>]+>", "\n", clean_html)
-    text_content = re.sub(r"&nbsp;", " ", text_content)
-    text_content = re.sub(r"&amp;", "&", text_content)
-    text_content = re.sub(r"&[a-z]+;", "", text_content)
-    text_content = re.sub(r"\n{3,}", "\n\n", text_content)
+    logger.debug(f"Booking-Links: {booking_links}")
+    if generic_booking_url:
+        logger.debug(f"Generischer Booking-Link: {generic_booking_url}")
 
-    # Log a snippet of the text content for debugging
-    text_preview = text_content[:500].strip()
-    logger.info(f"Text-Vorschau ({country_code}):\n{text_preview}")
+    # Convert to text
+    text_content = _clean_html_to_text(html_content)
 
-    # Split into blocks
+    # Log text preview
+    preview = text_content[:800].strip()
+    logger.info(f"Seitentext-Vorschau:\n{preview}")
+
+    # Find all exam types, dates, times in the full text
+    all_exams = list(set(m.upper() for m in EXAM_PATTERN.findall(text_content)))
+    all_dates = DATE_PATTERN.findall(text_content)
+    all_times = [t[0] if isinstance(t, tuple) else t for t in TIME_PATTERN.findall(text_content)]
+    all_prices = PRICE_PATTERN.findall(text_content)
+
+    logger.info(
+        f"Gefunden: Prüfungen={all_exams}, Daten={all_dates[:5]}, "
+        f"Zeiten={all_times[:5]}, Preise={len(all_prices)}"
+    )
+
+    # Check overall availability
+    text_lower = text_content.lower()
+    has_available = any(kw in text_lower for kw in AVAILABLE_KEYWORDS)
+    has_unavailable = any(kw in text_lower for kw in UNAVAILABLE_KEYWORDS)
+
+    # Strategy 1: Scan text blocks for exam+date combos
     blocks = re.split(r"\n{2,}", text_content)
-    logger.info(f"Textblöcke: {len(blocks)}")
-
-    # Count how many blocks mention exam types
-    exam_blocks = 0
-    for block in blocks:
-        if EXAM_PATTERN.search(block):
-            exam_blocks += 1
-    logger.info(f"Blöcke mit Prüfungstyp: {exam_blocks}")
-
-    # Strategy 1: Block-based parsing
     for block in blocks:
         block = block.strip()
         if len(block) < 5:
             continue
 
-        exam_matches = EXAM_PATTERN.findall(block)
-        if not exam_matches:
+        block_exams = [m.upper() for m in EXAM_PATTERN.findall(block)]
+        block_dates = DATE_PATTERN.findall(block)
+
+        if not block_exams:
             continue
 
-        dates = DATE_PATTERN.findall(block)
-        times = TIME_PATTERN.findall(block)
+        # Apply filter
+        if exam_type_filter != "ALL":
+            block_exams = [e for e in block_exams if e == exam_type_filter]
+            if not block_exams:
+                continue
 
         block_lower = block.lower()
-        is_available = any(kw in block_lower for kw in AVAILABLE_KEYWORDS)
-        is_unavailable = any(kw in block_lower for kw in UNAVAILABLE_KEYWORDS)
+        block_times = [t[0] if isinstance(t, tuple) else t for t in TIME_PATTERN.findall(block)]
 
-        if is_unavailable:
+        if any(kw in block_lower for kw in UNAVAILABLE_KEYWORDS):
             slots = "Ausgebucht"
-        elif is_available:
+        elif any(kw in block_lower for kw in AVAILABLE_KEYWORDS):
             slots = "Verfügbar"
         else:
             slots = "Unbekannt"
 
-        mentioned_city = None
-        for city in target_cities:
-            if city.lower() in block_lower:
-                mentioned_city = city
-                break
-
-        for exam_type in exam_matches:
-            if isinstance(exam_type, tuple):
-                exam_type = exam_type[0] if exam_type[0] else exam_type[1]
-            exam_type = exam_type.upper()
-
-            if dates:
-                for date in dates:
-                    time_str = times[0] if times else ""
-                    if isinstance(time_str, tuple):
-                        time_str = time_str[0]
+        for exam_type in set(block_exams):
+            if block_dates:
+                for date in block_dates:
                     appointments.append({
                         "country_code": country_code,
-                        "city": mentioned_city or (target_cities[0] if target_cities else ""),
+                        "city": city,
                         "exam_type": exam_type,
                         "exam_date": date,
-                        "exam_time": time_str,
+                        "exam_time": block_times[0] if block_times else "",
                         "slots_available": slots,
-                        "booking_url": booking_links.get(exam_type, ""),
+                        "booking_url": booking_links.get(exam_type, generic_booking_url),
                     })
             else:
-                # No date found but exam type exists - still record it
                 appointments.append({
                     "country_code": country_code,
-                    "city": mentioned_city or (target_cities[0] if target_cities else ""),
+                    "city": city,
                     "exam_type": exam_type,
                     "exam_date": "Siehe Website",
                     "exam_time": "",
                     "slots_available": slots,
-                    "booking_url": booking_links.get(exam_type, ""),
+                    "booking_url": booking_links.get(exam_type, generic_booking_url),
                 })
 
-    # Strategy 2: If no appointments found via blocks, try scanning the full text
-    if not appointments:
-        logger.info("Strategie 1 fand nichts. Versuche Strategie 2 (Volltext-Scan)...")
-
-        all_exams = EXAM_PATTERN.findall(text_content)
-        all_dates = DATE_PATTERN.findall(text_content)
-
-        logger.info(
-            f"Volltext: {len(all_exams)} Prüfungstypen, "
-            f"{len(all_dates)} Daten gefunden"
-        )
-
-        if all_exams and all_dates:
-            for exam_type in all_exams:
-                if isinstance(exam_type, tuple):
-                    exam_type = exam_type[0] if exam_type[0] else exam_type[1]
-                exam_type = exam_type.upper()
-
-                for date in all_dates:
-                    appointments.append({
-                        "country_code": country_code,
-                        "city": target_cities[0] if target_cities else "",
-                        "exam_type": exam_type,
-                        "exam_date": date,
-                        "exam_time": "",
-                        "slots_available": "Unbekannt",
-                        "booking_url": booking_links.get(exam_type, ""),
-                    })
-        elif all_exams:
-            # Found exam types but no dates
-            for exam_type in all_exams:
-                if isinstance(exam_type, tuple):
-                    exam_type = exam_type[0] if exam_type[0] else exam_type[1]
-                exam_type = exam_type.upper()
-
+    # Strategy 2: If specific exam page and no block matches, use full text data
+    if not appointments and exam_type_filter != "ALL":
+        if all_dates:
+            for date in all_dates:
                 appointments.append({
                     "country_code": country_code,
-                    "city": target_cities[0] if target_cities else "",
-                    "exam_type": exam_type,
-                    "exam_date": "Siehe Website",
-                    "exam_time": "",
-                    "slots_available": "Unbekannt",
-                    "booking_url": booking_links.get(exam_type, ""),
+                    "city": city,
+                    "exam_type": exam_type_filter,
+                    "exam_date": date,
+                    "exam_time": all_times[0] if all_times else "",
+                    "slots_available": "Verfügbar" if has_available else (
+                        "Ausgebucht" if has_unavailable else "Unbekannt"
+                    ),
+                    "booking_url": booking_links.get(exam_type_filter, generic_booking_url),
                 })
-
-    # Strategy 3: If still nothing, use links that mention exam types
-    if not appointments and all_links_with_exam:
-        logger.info("Strategie 2 fand nichts. Versuche Strategie 3 (Link-Analyse)...")
-        for exam_type, href, link_text in all_links_with_exam:
-            dates = DATE_PATTERN.findall(link_text)
+        elif all_prices:
+            # Page has prices listed = exam is offered here
             appointments.append({
                 "country_code": country_code,
-                "city": target_cities[0] if target_cities else "",
-                "exam_type": exam_type,
-                "exam_date": dates[0] if dates else "Siehe Website",
+                "city": city,
+                "exam_type": exam_type_filter,
+                "exam_date": "Siehe Website",
                 "exam_time": "",
                 "slots_available": "Unbekannt",
-                "booking_url": href,
+                "booking_url": booking_links.get(exam_type_filter, generic_booking_url),
             })
+
+    # Strategy 3: If overview page, cross-match all exams with all dates
+    if not appointments and exam_type_filter == "ALL" and all_exams and all_dates:
+        logger.info("Strategie 3: Kreuz-Verknüpfung von Prüfungen und Daten")
+        for exam_type in all_exams:
+            for date in all_dates:
+                appointments.append({
+                    "country_code": country_code,
+                    "city": city,
+                    "exam_type": exam_type,
+                    "exam_date": date,
+                    "exam_time": "",
+                    "slots_available": "Unbekannt",
+                    "booking_url": booking_links.get(exam_type, generic_booking_url),
+                })
 
     # Deduplicate
     seen = set()
-    unique_appointments = []
+    unique = []
     for appt in appointments:
-        key = (
-            appt["country_code"],
-            appt["city"],
-            appt["exam_type"],
-            appt["exam_date"],
-            appt["exam_time"],
-        )
+        key = (appt["country_code"], appt["city"], appt["exam_type"],
+               appt["exam_date"], appt["exam_time"])
         if key not in seen:
             seen.add(key)
-            unique_appointments.append(appt)
+            unique.append(appt)
 
-    logger.info(
-        f"Parser-Ergebnis: {len(unique_appointments)} eindeutige Termine "
-        f"({country_code})"
-    )
-    for appt in unique_appointments[:5]:
+    logger.info(f"Parser-Ergebnis: {len(unique)} Termine ({city}, {country_code})")
+    for appt in unique[:10]:
         logger.info(
             f"  -> {appt['exam_type']} | {appt['exam_date']} | "
-            f"{appt['city']} | {appt['slots_available']}"
+            f"{appt['slots_available']} | {appt['booking_url'][:60] if appt['booking_url'] else 'kein Link'}"
         )
 
-    return unique_appointments
+    return unique
