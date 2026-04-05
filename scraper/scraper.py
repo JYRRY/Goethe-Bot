@@ -18,7 +18,7 @@ USER_AGENTS = [
 
 MAX_RETRIES = 3
 BASE_BACKOFF = 2
-DEBUG_DIR = "data/debug"
+DEBUG_DIR = "debug"
 
 
 class GoetheScraperManager:

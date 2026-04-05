@@ -35,8 +35,8 @@ RUN playwright install chromium
 # Copy application code
 COPY . .
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data
+# Create directories for database and debug
+RUN mkdir -p /app/db /app/debug
 
 # Run the bot
 CMD ["python", "-m", "bot.main"]

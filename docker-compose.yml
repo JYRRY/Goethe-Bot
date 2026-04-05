@@ -6,10 +6,10 @@ services:
     env_file:
       - .env
     volumes:
-      - bot-data:/app/data
+      - bot-db:/app/db
     environment:
-      - DATABASE_PATH=/app/data/goethe_bot.db
-      - LOG_LEVEL=DEBUG
+      - DATABASE_PATH=/app/db/goethe_bot.db
+      - LOG_LEVEL=INFO
 
 volumes:
-  bot-data:
+  bot-db:
