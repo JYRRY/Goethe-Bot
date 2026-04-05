@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 from playwright.async_api import async_playwright, Browser, BrowserContext
 
@@ -18,6 +19,7 @@ USER_AGENTS = [
 
 MAX_RETRIES = 3
 BASE_BACKOFF = 2  # seconds
+DEBUG_DIR = "data/debug"
 
 
 class GoetheScraperManager:
@@ -30,6 +32,7 @@ class GoetheScraperManager:
 
     async def start(self):
         """Start the browser."""
+        os.makedirs(DEBUG_DIR, exist_ok=True)
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=True,
@@ -52,6 +55,7 @@ class GoetheScraperManager:
             user_agent=ua,
             viewport={"width": 1920, "height": 1080},
             locale="de-DE",
+            java_script_enabled=True,
         )
 
     async def stop(self):
@@ -67,16 +71,13 @@ class GoetheScraperManager:
     async def scrape_country(self, country_code: str, cities: list[str]) -> list[dict]:
         """
         Scrape exam appointments for a specific country.
-        Returns list of appointment dicts with keys:
-            country_code, city, exam_type, exam_date, exam_time,
-            slots_available, booking_url
+        Returns list of appointment dicts.
         """
         url = get_exam_url(country_code)
         all_appointments = []
 
         for attempt in range(MAX_RETRIES):
             try:
-                # Rotate context occasionally
                 if attempt > 0:
                     await self._new_context()
 
@@ -86,10 +87,17 @@ class GoetheScraperManager:
                         f"Seite laden: {url} (Versuch {attempt + 1}/{MAX_RETRIES})"
                     )
 
-                    await page.goto(url, wait_until="networkidle", timeout=60000)
+                    response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-                    # Wait for content to render
-                    await page.wait_for_timeout(random.randint(2000, 4000))
+                    # Log response status
+                    if response:
+                        logger.info(f"HTTP Status: {response.status} für {url}")
+                        if response.status == 403:
+                            logger.warning(f"Zugriff verweigert (403) für {url}")
+                            raise Exception(f"403 Forbidden für {url}")
+
+                    # Wait for page to fully render
+                    await page.wait_for_timeout(5000)
 
                     # Try to accept cookies if dialog appears
                     try:
@@ -97,16 +105,53 @@ class GoetheScraperManager:
                             "button:has-text('Alle akzeptieren'), "
                             "button:has-text('Accept all'), "
                             "button:has-text('Akzeptieren'), "
-                            "[data-testid='cookie-accept']"
+                            "button:has-text('Alle Cookies akzeptieren'), "
+                            "[data-testid='cookie-accept'], "
+                            ".cookie-consent-accept, "
+                            "#cookie-accept"
                         )
                         if await cookie_btn.count() > 0:
                             await cookie_btn.first.click()
-                            await page.wait_for_timeout(1000)
+                            logger.info("Cookie-Banner akzeptiert.")
+                            await page.wait_for_timeout(2000)
                     except Exception:
                         pass
 
+                    # Wait more for dynamic content
+                    await page.wait_for_timeout(3000)
+
+                    # Save debug screenshot and HTML
+                    try:
+                        screenshot_path = os.path.join(
+                            DEBUG_DIR, f"{country_code}_page.png"
+                        )
+                        await page.screenshot(path=screenshot_path, full_page=True)
+                        logger.info(f"Screenshot gespeichert: {screenshot_path}")
+                    except Exception as e:
+                        logger.warning(f"Screenshot fehlgeschlagen: {e}")
+
                     # Get page content
                     html_content = await page.content()
+
+                    # Save debug HTML
+                    try:
+                        html_path = os.path.join(
+                            DEBUG_DIR, f"{country_code}_page.html"
+                        )
+                        with open(html_path, "w", encoding="utf-8") as f:
+                            f.write(html_content)
+                        logger.info(
+                            f"HTML gespeichert: {html_path} "
+                            f"({len(html_content)} Zeichen)"
+                        )
+                    except Exception as e:
+                        logger.warning(f"HTML speichern fehlgeschlagen: {e}")
+
+                    # Get the page title for debugging
+                    title = await page.title()
+                    logger.info(f"Seitentitel: {title}")
+
+                    # Parse appointments
                     appointments = parse_appointments(
                         html_content, country_code, cities
                     )
