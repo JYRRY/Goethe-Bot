@@ -112,10 +112,10 @@ def get_exam_urls(country_code: str, city: str) -> list[dict]:
         "page_type": "registration",
     })
 
-    # Individual exam type pages (try both .html and .cfm)
+    # Individual exam type pages (.cfm — these contain the examfinder widget)
     for exam_type, suffix in EXAM_URL_SUFFIXES.items():
         urls.append({
-            "url": f"{base}/{suffix}.html",
+            "url": f"{base}/{suffix}.cfm",
             "exam_type": exam_type,
             "page_type": "exam_detail",
         })
