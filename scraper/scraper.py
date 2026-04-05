@@ -322,11 +322,21 @@ class GoetheScraperManager:
             raw = await page.evaluate("""
                 () => {
                     const results = [];
-                    const dateRegex = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/;
+                    const dateRegex = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/g;
+                    const dateRegexSingle = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/;
                     const priceRegex = /(\\d{2,4}[.,]?\\d{0,2}\\s*(?:EUR|€|EGP|SAR|MAD|LBP|DZD|USD))/i;
                     const timeRegex = /(\\d{1,2}[:.:]\\d{2})\\s*(?:Uhr|h)?/i;
 
-                    // Try many selectors that Goethe examfinder might use
+                    // Today's date for filtering past exams
+                    const now = new Date();
+                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+                    function isDateInFuture(dateStr) {
+                        const [dd, mm, yyyy] = dateStr.split('.').map(Number);
+                        const examDate = new Date(yyyy, mm - 1, dd);
+                        return examDate >= today;
+                    }
+
                     const rowSelectors = [
                         '[class*="examfinder"] tr',
                         '[class*="examfinder"] .row',
@@ -352,19 +362,23 @@ class GoetheScraperManager:
                             const text = (el.textContent || '').trim();
                             if (text.length < 5) continue;
 
-                            const dateMatch = text.match(dateRegex);
+                            const dateMatch = text.match(dateRegexSingle);
                             if (!dateMatch) continue;
 
                             const date = dateMatch[1];
-                            // Skip old dates
-                            const year = parseInt(date.split('.')[2], 10);
-                            if (year < 2025) continue;
+
+                            // Skip past dates
+                            if (!isDateInFuture(date)) continue;
 
                             // Deduplicate
                             if (seen.has(date)) continue;
                             seen.add(date);
 
-                            const timeMatch = text.match(timeRegex);
+                            // Remove all dates from text, THEN search for time
+                            // This prevents "06.02" from date "06.02.2026" being matched as time
+                            const textWithoutDates = text.replace(dateRegex, '');
+                            const timeMatch = textWithoutDates.match(timeRegex);
+
                             const priceMatch = text.match(priceRegex);
 
                             // Find booking link
@@ -405,12 +419,10 @@ class GoetheScraperManager:
                         const allDates = body.match(/(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/g) || [];
 
                         for (const date of allDates) {
-                            const year = parseInt(date.split('.')[2], 10);
-                            if (year < 2025) continue;
+                            if (!isDateInFuture(date)) continue;
                             if (seen.has(date)) continue;
                             seen.add(date);
 
-                            // Find nearby booking links
                             let bookingUrl = '';
                             const allLinks = document.querySelectorAll('a[href]');
                             for (const a of allLinks) {
@@ -498,13 +510,17 @@ class GoetheScraperManager:
         all_bookings = booking_pattern.findall(search_area)
         all_prices = price_pattern.findall(search_area)
 
+        from datetime import date as date_cls
+        today = date_cls.today()
+
         for date_str in all_dates:
             if date_str in seen_dates:
                 continue
-            # Filter old dates
+            # Filter past dates
             try:
-                year = int(date_str.split(".")[2])
-                if year < 2025:
+                parts = date_str.split(".")
+                exam_date = date_cls(int(parts[2]), int(parts[1]), int(parts[0]))
+                if exam_date < today:
                     continue
             except (ValueError, IndexError):
                 continue
