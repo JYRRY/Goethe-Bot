@@ -9,6 +9,7 @@ services:
       - bot-data:/app/data
     environment:
       - DATABASE_PATH=/app/data/goethe_bot.db
+      - LOG_LEVEL=DEBUG
 
 volumes:
   bot-data:
