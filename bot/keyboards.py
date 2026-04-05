@@ -14,11 +14,18 @@ def country_keyboard() -> InlineKeyboardMarkup:
 
 def city_keyboard(country_code: str) -> InlineKeyboardMarkup:
     """Build inline keyboard for city selection."""
-    cities = get_cities(country_code)
+    country = LOCATIONS.get(country_code, {})
+    cities_data = country.get("cities", {})
     buttons = []
-    for city in cities:
+    for city_name, city_info in cities_data.items():
+        note = city_info.get("note", city_name)
+        # Show the note as button text if it has extra info
+        display = note if note != city_name else city_name
         buttons.append(
-            [InlineKeyboardButton(city, callback_data=f"city:{country_code}:{city}")]
+            [InlineKeyboardButton(
+                display,
+                callback_data=f"city:{country_code}:{city_name}",
+            )]
         )
     buttons.append(
         [InlineKeyboardButton("⬅️ Zurück", callback_data="back:country")]
@@ -30,7 +37,7 @@ def exam_type_keyboard(country_code: str, city: str) -> InlineKeyboardMarkup:
     """Build inline keyboard for exam type selection."""
     buttons = []
     row = []
-    for i, exam in enumerate(EXAM_TYPES):
+    for exam in EXAM_TYPES:
         row.append(
             InlineKeyboardButton(
                 exam, callback_data=f"exam:{country_code}:{city}:{exam}"

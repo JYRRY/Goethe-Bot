@@ -4,7 +4,7 @@ import os
 import random
 from playwright.async_api import async_playwright, Browser, BrowserContext
 
-from data.locations import get_exam_url
+from data.locations import get_exam_urls, get_main_exam_url, EXAM_URL_SUFFIXES
 from scraper.parser import parse_appointments
 
 logger = logging.getLogger(__name__)
@@ -13,12 +13,11 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ]
 
 MAX_RETRIES = 3
-BASE_BACKOFF = 2  # seconds
+BASE_BACKOFF = 2
 DEBUG_DIR = "data/debug"
 
 
@@ -68,14 +67,8 @@ class GoetheScraperManager:
             await self._playwright.stop()
         logger.info("Scraper-Browser gestoppt.")
 
-    async def scrape_country(self, country_code: str, cities: list[str]) -> list[dict]:
-        """
-        Scrape exam appointments for a specific country.
-        Returns list of appointment dicts.
-        """
-        url = get_exam_url(country_code)
-        all_appointments = []
-
+    async def _fetch_page(self, url: str, label: str) -> str | None:
+        """Fetch a single page and return its HTML content."""
         for attempt in range(MAX_RETRIES):
             try:
                 if attempt > 0:
@@ -83,84 +76,62 @@ class GoetheScraperManager:
 
                 page = await self._context.new_page()
                 try:
-                    logger.info(
-                        f"Seite laden: {url} (Versuch {attempt + 1}/{MAX_RETRIES})"
+                    logger.info(f"Lade: {url} (Versuch {attempt + 1}/{MAX_RETRIES})")
+                    response = await page.goto(
+                        url, wait_until="domcontentloaded", timeout=60000
                     )
 
-                    response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-                    # Log response status
                     if response:
-                        logger.info(f"HTTP Status: {response.status} für {url}")
+                        logger.info(f"HTTP {response.status}: {url}")
                         if response.status == 403:
-                            logger.warning(f"Zugriff verweigert (403) für {url}")
-                            raise Exception(f"403 Forbidden für {url}")
+                            raise Exception(f"403 Forbidden: {url}")
+                        if response.status == 404:
+                            logger.debug(f"Seite nicht gefunden (404): {url}")
+                            return None
 
-                    # Wait for page to fully render
-                    await page.wait_for_timeout(5000)
+                    # Wait for dynamic content
+                    await page.wait_for_timeout(random.randint(3000, 5000))
 
-                    # Try to accept cookies if dialog appears
+                    # Accept cookies
                     try:
                         cookie_btn = page.locator(
                             "button:has-text('Alle akzeptieren'), "
                             "button:has-text('Accept all'), "
                             "button:has-text('Akzeptieren'), "
-                            "button:has-text('Alle Cookies akzeptieren'), "
-                            "[data-testid='cookie-accept'], "
-                            ".cookie-consent-accept, "
-                            "#cookie-accept"
+                            ".cookie-consent-accept"
                         )
                         if await cookie_btn.count() > 0:
                             await cookie_btn.first.click()
-                            logger.info("Cookie-Banner akzeptiert.")
-                            await page.wait_for_timeout(2000)
+                            await page.wait_for_timeout(1500)
                     except Exception:
                         pass
 
-                    # Wait more for dynamic content
-                    await page.wait_for_timeout(3000)
-
-                    # Save debug screenshot and HTML
-                    try:
-                        screenshot_path = os.path.join(
-                            DEBUG_DIR, f"{country_code}_page.png"
-                        )
-                        await page.screenshot(path=screenshot_path, full_page=True)
-                        logger.info(f"Screenshot gespeichert: {screenshot_path}")
-                    except Exception as e:
-                        logger.warning(f"Screenshot fehlgeschlagen: {e}")
-
-                    # Get page content
                     html_content = await page.content()
 
-                    # Save debug HTML
+                    # Save debug files
+                    safe_label = label.replace("/", "_").replace(" ", "_")
                     try:
-                        html_path = os.path.join(
-                            DEBUG_DIR, f"{country_code}_page.html"
+                        await page.screenshot(
+                            path=os.path.join(DEBUG_DIR, f"{safe_label}.png"),
+                            full_page=True,
                         )
-                        with open(html_path, "w", encoding="utf-8") as f:
+                        with open(
+                            os.path.join(DEBUG_DIR, f"{safe_label}.html"),
+                            "w",
+                            encoding="utf-8",
+                        ) as f:
                             f.write(html_content)
                         logger.info(
-                            f"HTML gespeichert: {html_path} "
+                            f"Debug gespeichert: {safe_label} "
                             f"({len(html_content)} Zeichen)"
                         )
                     except Exception as e:
-                        logger.warning(f"HTML speichern fehlgeschlagen: {e}")
+                        logger.debug(f"Debug-Speichern fehlgeschlagen: {e}")
 
-                    # Get the page title for debugging
                     title = await page.title()
-                    logger.info(f"Seitentitel: {title}")
+                    logger.info(f"Titel: {title}")
 
-                    # Parse appointments
-                    appointments = parse_appointments(
-                        html_content, country_code, cities
-                    )
-                    all_appointments.extend(appointments)
-
-                    logger.info(
-                        f"{len(appointments)} Termine gefunden für {country_code}"
-                    )
-                    break
+                    return html_content
 
                 finally:
                     await page.close()
@@ -168,18 +139,75 @@ class GoetheScraperManager:
             except Exception as e:
                 backoff = BASE_BACKOFF * (2**attempt) + random.uniform(0, 1)
                 logger.warning(
-                    f"Scraping-Fehler für {country_code} "
-                    f"(Versuch {attempt + 1}/{MAX_RETRIES}): {e}"
+                    f"Fehler für {url} (Versuch {attempt + 1}): {e}"
                 )
                 if attempt < MAX_RETRIES - 1:
-                    logger.info(f"Warte {backoff:.1f}s vor erneutem Versuch...")
                     await asyncio.sleep(backoff)
                 else:
-                    logger.error(
-                        f"Alle Versuche für {country_code} fehlgeschlagen."
-                    )
+                    logger.error(f"Alle Versuche für {url} fehlgeschlagen.")
 
-        return all_appointments
+        return None
+
+    async def scrape_city(
+        self, country_code: str, city: str
+    ) -> list[dict]:
+        """
+        Scrape exam appointments for a specific city.
+        Strategy:
+        1. Load the main exam page and registration page
+        2. Load individual exam type subpages
+        3. Collect all found appointments
+        """
+        exam_urls = get_exam_urls(country_code, city)
+        if not exam_urls:
+            logger.warning(f"Keine URLs für {city} ({country_code})")
+            return []
+
+        all_appointments = []
+        seen_urls = set()
+
+        for url_info in exam_urls:
+            url = url_info["url"]
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            exam_type_filter = url_info["exam_type"]
+            page_type = url_info["page_type"]
+            label = f"{country_code}_{city}_{page_type}_{exam_type_filter}"
+
+            html = await self._fetch_page(url, label)
+            if not html:
+                continue
+
+            appointments = parse_appointments(
+                html, country_code, city, exam_type_filter
+            )
+            all_appointments.extend(appointments)
+
+            # Small delay between pages to be respectful
+            await asyncio.sleep(random.uniform(1, 3))
+
+        # Deduplicate across all pages
+        seen = set()
+        unique = []
+        for appt in all_appointments:
+            key = (
+                appt["country_code"],
+                appt["city"],
+                appt["exam_type"],
+                appt["exam_date"],
+                appt["exam_time"],
+            )
+            if key not in seen:
+                seen.add(key)
+                unique.append(appt)
+
+        logger.info(
+            f"Scrape-Ergebnis für {city} ({country_code}): "
+            f"{len(unique)} eindeutige Termine"
+        )
+        return unique
 
 
 # Global scraper instance
