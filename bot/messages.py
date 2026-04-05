@@ -62,9 +62,25 @@ APPOINTMENT_ALERT = (
     "📅 Datum: {date}\n"
     "📍 Standort: {city}, {country}\n"
     "📝 Prüfungsteile: {exam_parts}\n"
+    "💰 Preis: {price}\n"
     "📊 Verfügbarkeit: {slots}\n"
 )
 
 APPOINTMENT_ALERT_WITH_LINK = APPOINTMENT_ALERT + "\n[👉 Jetzt buchen\\!]({booking_url})"
+
+APPOINTMENT_ANNOUNCED = (
+    "🔔 *B2\\-Prüfungstermin angekündigt\\!*\n\n"
+    "📅 Datum: {date}\n"
+    "📍 Standort: {city}, {country}\n"
+    "📝 Prüfungsteile: {exam_parts}\n"
+    "💰 Preis: {price}\n"
+    "📌 Anmeldung ab: {booking_opens}\n\n"
+    "Wir erinnern dich, sobald die Buchung möglich ist\\!"
+)
+
+APPOINTMENT_ANNOUNCED_WITH_LINK = APPOINTMENT_ANNOUNCED.replace(
+    "Wir erinnern dich, sobald die Buchung möglich ist\\!",
+    "[👉 Jetzt buchen\\!]({booking_url})"
+)
 
 ERROR_GENERIC = "❌ Ein Fehler ist aufgetreten\\. Bitte versuche es erneut\\."

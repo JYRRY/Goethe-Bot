@@ -51,11 +51,23 @@ async def notify_new_appointment(bot: Bot, appointment: dict, appt_hash: str):
             "exam_parts": _escape_md(
                 appointment.get("exam_parts", "") or "Nicht angegeben"
             ),
+            "price": _escape_md(
+                appointment.get("price", "") or "Nicht angegeben"
+            ),
             "slots": _escape_md(appointment.get("slots_available", "Unbekannt")),
         }
 
         booking_url = appointment.get("booking_url", "")
-        if booking_url:
+        booking_opens = appointment.get("booking_opens", "")
+
+        if booking_opens:
+            fmt_kwargs["booking_opens"] = _escape_md(booking_opens)
+            if booking_url:
+                fmt_kwargs["booking_url"] = booking_url
+                text = messages.APPOINTMENT_ANNOUNCED_WITH_LINK.format(**fmt_kwargs)
+            else:
+                text = messages.APPOINTMENT_ANNOUNCED.format(**fmt_kwargs)
+        elif booking_url:
             fmt_kwargs["booking_url"] = booking_url
             text = messages.APPOINTMENT_ALERT_WITH_LINK.format(**fmt_kwargs)
         else:
