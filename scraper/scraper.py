@@ -4,9 +4,9 @@ import logging
 import os
 import random
 import re
-from playwright.async_api import async_playwright, Browser, BrowserContext, Response
+from playwright.async_api import async_playwright, Browser, BrowserContext
 
-from data.locations import get_exam_urls, EXAM_URL_SUFFIXES
+from data.locations import get_exam_urls, LOCATIONS
 
 logger = logging.getLogger(__name__)
 
@@ -19,27 +19,42 @@ USER_AGENTS = [
 MAX_RETRIES = 2
 DEBUG_DIR = "debug"
 
-# Regex to extract the examfinder API config from page JavaScript
-EXAMFINDER_CONFIG_RE = re.compile(
-    r'var\s+examfinderDataCF_\d+\s*=\s*(\{.*?\});', re.DOTALL
-)
+# Common cookie consent button selectors (Cookiebot, OneTrust, generic)
+COOKIE_ACCEPT_SELECTORS = [
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+    "#CybotCookiebotDialogBodyButtonAccept",
+    ".cookie-consent__accept-all",
+    "#onetrust-accept-btn-handler",
+    "button[data-cookie-accept]",
+    ".cc-btn.cc-allow",
+    "button:has-text('Alle akzeptieren')",
+    "button:has-text('Akzeptieren')",
+    "button:has-text('Accept all')",
+    "a:has-text('Alle akzeptieren')",
+]
 
 
 class GoetheScraperManager:
-    """Scrapes Goethe-Institut exam data via their REST API."""
+    """Scrapes Goethe-Institut exam data from rendered pages."""
 
     def __init__(self):
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
+        self._cookies_accepted = False
 
     async def start(self):
         os.makedirs(DEBUG_DIR, exist_ok=True)
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox",
-                  "--disable-dev-shm-usage", "--disable-gpu"],
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-blink-features=AutomationControlled",
+            ],
         )
         await self._new_context()
         logger.info("Scraper-Browser gestartet.")
@@ -51,7 +66,13 @@ class GoetheScraperManager:
             user_agent=random.choice(USER_AGENTS),
             viewport={"width": 1920, "height": 1080},
             locale="de-DE",
+            java_script_enabled=True,
         )
+        # Hide webdriver flag to avoid bot detection
+        await self._context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        """)
+        self._cookies_accepted = False
 
     async def stop(self):
         if self._context:
@@ -62,87 +83,143 @@ class GoetheScraperManager:
             await self._playwright.stop()
         logger.info("Scraper-Browser gestoppt.")
 
-    async def _extract_api_data(self, page_url: str, exam_type: str) -> list[dict]:
+    async def _accept_cookies(self, page) -> bool:
+        """Try to find and click the cookie consent accept button."""
+        for selector in COOKIE_ACCEPT_SELECTORS:
+            try:
+                btn = page.locator(selector).first
+                if await btn.is_visible(timeout=1000):
+                    await btn.click()
+                    logger.info(f"Cookie-Zustimmung geklickt: {selector}")
+                    await page.wait_for_timeout(1000)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def _warm_up_session(self, country_code: str) -> bool:
         """
-        Load a .cfm exam page, extract the examfinder API config,
-        then call the API directly to get exam dates as JSON.
+        Visit the main Goethe page first to establish cookies/session,
+        then accept the cookie consent banner.
+        """
+        if self._cookies_accepted:
+            return True
+
+        page = await self._context.new_page()
+        try:
+            # Visit the main institute page to get session cookies
+            country = LOCATIONS.get(country_code, {})
+            cities = country.get("cities", {})
+            first_city = next(iter(cities.values()), None)
+            if first_city:
+                main_url = first_city["base_url"].rsplit("/prf", 1)[0] + ".html"
+            else:
+                main_url = f"https://www.goethe.de/ins/{country_code}/de/index.html"
+
+            logger.info(f"Session aufwärmen: {main_url}")
+            resp = await page.goto(main_url, wait_until="domcontentloaded", timeout=30000)
+
+            if resp and resp.status >= 400:
+                logger.warning(f"Warm-up Seite Status: {resp.status}")
+                # Try the generic Goethe page
+                await page.goto("https://www.goethe.de/de/index.html",
+                                wait_until="domcontentloaded", timeout=30000)
+
+            # Wait for cookie banner to appear
+            await page.wait_for_timeout(3000)
+
+            # Try to accept cookies
+            accepted = await self._accept_cookies(page)
+            if accepted:
+                self._cookies_accepted = True
+                logger.info("Cookies akzeptiert.")
+            else:
+                logger.info("Kein Cookie-Banner gefunden (evtl. nicht nötig).")
+                self._cookies_accepted = True  # Continue anyway
+
+            # Save debug screenshot
+            try:
+                await page.screenshot(path=os.path.join(DEBUG_DIR, "warmup.png"))
+            except Exception:
+                pass
+
+            return True
+        except Exception as e:
+            logger.warning(f"Session-Warmup fehlgeschlagen: {e}")
+            return False
+        finally:
+            await page.close()
+
+    async def _scrape_exam_page(self, page_url: str, exam_type: str) -> list[dict]:
+        """
+        Load a .cfm exam page, wait for JavaScript to render exam data,
+        then extract appointments from the rendered DOM.
         """
         for attempt in range(MAX_RETRIES):
             try:
                 if attempt > 0:
                     await self._new_context()
+                    self._cookies_accepted = False
 
                 page = await self._context.new_page()
-                api_responses = []
-
-                # Intercept API responses
-                async def handle_response(response: Response):
-                    if "/rest/examfinder/" in response.url:
-                        try:
-                            body = await response.text()
-                            api_responses.append({
-                                "url": response.url,
-                                "status": response.status,
-                                "body": body,
-                            })
-                            logger.info(f"API abgefangen: {response.url} ({response.status})")
-                        except Exception:
-                            pass
-
-                page.on("response", handle_response)
 
                 try:
-                    logger.info(f"Lade: {page_url}")
-                    resp = await page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+                    logger.info(f"Lade Prüfungsseite: {page_url}")
+                    resp = await page.goto(page_url, wait_until="domcontentloaded",
+                                           timeout=30000)
 
                     if resp and resp.status == 404:
+                        logger.info(f"Seite nicht gefunden (404): {page_url}")
                         return []
                     if resp and resp.status == 403:
-                        raise Exception(f"403 Forbidden: {page_url}")
+                        logger.warning(f"Zugriff verweigert (403): {page_url}")
+                        if attempt < MAX_RETRIES - 1:
+                            raise Exception("403 — Neuer Versuch nötig")
+                        return []
 
-                    # Wait for API calls to complete
-                    await page.wait_for_timeout(8000)
+                    # Accept cookies if banner appears on this page too
+                    await page.wait_for_timeout(2000)
+                    await self._accept_cookies(page)
 
-                    # Also extract API config from page source
+                    # Wait for the examfinder widget to render
+                    # The widget replaces Handlebars templates like {{eventTimeSpan}}
+                    # with actual content after the API call completes.
+                    try:
+                        await page.wait_for_selector(
+                            ".examfinder-result, .examfinder-exam, "
+                            ".pr-termin, .event-list-item, "
+                            "[class*='examfinder'] table, "
+                            "[class*='examfinder'] .row",
+                            timeout=15000,
+                        )
+                        logger.info(f"Examfinder-Widget geladen für {exam_type}")
+                    except Exception:
+                        logger.info(f"Kein Examfinder-Widget gefunden, prüfe Seiteninhalt...")
+
+                    # Additional wait for any late-loading content
+                    await page.wait_for_timeout(3000)
+
+                    # Save debug screenshot and HTML
+                    try:
+                        safe = exam_type.replace(" ", "_")
+                        await page.screenshot(
+                            path=os.path.join(DEBUG_DIR, f"page_{safe}.png"),
+                            full_page=True,
+                        )
+                        html = await page.content()
+                        with open(os.path.join(DEBUG_DIR, f"page_{safe}.html"), "w") as f:
+                            f.write(html[:200000])
+                    except Exception:
+                        pass
+
+                    # Extract appointments from the rendered page
                     html = await page.content()
-                    config = self._parse_examfinder_config(html)
+                    appointments = self._extract_from_rendered_html(html, exam_type)
 
-                    if config and not api_responses:
-                        # API wasn't called automatically, call it manually
-                        api_path = config.get("apiPath", "")
-                        if api_path:
-                            api_url = f"https://www.goethe.de{api_path}"
-                            logger.info(f"API manuell aufrufen: {api_url}")
-                            try:
-                                api_resp = await page.evaluate(f"""
-                                    async () => {{
-                                        const resp = await fetch('{api_url}');
-                                        return await resp.text();
-                                    }}
-                                """)
-                                api_responses.append({
-                                    "url": api_url,
-                                    "status": 200,
-                                    "body": api_resp,
-                                })
-                            except Exception as e:
-                                logger.warning(f"Manueller API-Aufruf fehlgeschlagen: {e}")
-
-                    # Parse API responses
-                    appointments = []
-                    for api_resp in api_responses:
-                        parsed = self._parse_api_response(api_resp["body"], exam_type)
-                        appointments.extend(parsed)
-                        # Save debug
-                        try:
-                            safe = exam_type.replace(" ", "_")
-                            with open(os.path.join(DEBUG_DIR, f"api_{safe}.json"), "w") as f:
-                                f.write(api_resp["body"][:50000])
-                        except Exception:
-                            pass
-
-                    if not appointments and config:
-                        logger.info(f"Keine API-Daten. Config: {json.dumps(config, indent=2)[:500]}")
+                    # Also try extracting from the examfinder widget via JavaScript
+                    if not appointments:
+                        js_data = await self._extract_via_js(page, exam_type)
+                        appointments.extend(js_data)
 
                     return appointments
 
@@ -156,101 +233,209 @@ class GoetheScraperManager:
 
         return []
 
-    def _parse_examfinder_config(self, html: str) -> dict | None:
-        """Extract the examfinderDataCF config from page JavaScript."""
-        match = EXAMFINDER_CONFIG_RE.search(html)
-        if not match:
-            return None
-        try:
-            # The config is JavaScript object notation, mostly valid JSON
-            config_str = match.group(1)
-            # Fix JavaScript-style issues
-            config_str = re.sub(r'(\w+):', r'"\1":', config_str)
-            config_str = config_str.replace("'", '"')
-            config = json.loads(config_str)
-            logger.info(f"ExamFinder Config: apiPath={config.get('apiPath', 'N/A')}")
-            return config
-        except json.JSONDecodeError:
-            # Try extracting just the apiPath
-            api_match = re.search(r'"apiPath"\s*:\s*"([^"]+)"', match.group(1))
-            if api_match:
-                return {"apiPath": api_match.group(1)}
-            return None
-
-    def _parse_api_response(self, body: str, exam_type_filter: str) -> list[dict]:
-        """Parse the examfinder API JSON response into appointments."""
+    def _extract_from_rendered_html(self, html: str, exam_type: str) -> list[dict]:
+        """
+        Extract appointment data from the fully rendered HTML.
+        After JavaScript executes, the Handlebars templates are replaced
+        with actual data in the DOM.
+        """
         appointments = []
-        try:
-            data = json.loads(body)
-        except json.JSONDecodeError:
-            logger.warning(f"API-Antwort ist kein gültiges JSON: {body[:200]}")
-            return []
 
-        # The API returns exam data - structure may vary
-        # Common patterns: {"DATA": [...]} or direct array
-        exams = []
-        if isinstance(data, list):
-            exams = data
-        elif isinstance(data, dict):
-            exams = data.get("DATA", data.get("data", data.get("exams", [])))
-            if isinstance(exams, dict):
-                exams = [exams]
+        # Look for booking/registration links
+        booking_pattern = re.compile(
+            r'href="(https?://(?:anmeldung\.goethe\.de|www\.goethe\.de)[^"]*(?:anm|book|regist)[^"]*)"',
+            re.IGNORECASE,
+        )
 
-        logger.info(f"API: {len(exams)} Prüfungen gefunden")
+        # Look for price patterns
+        price_pattern = re.compile(
+            r'(\d{2,4}(?:[.,]\d{2})?\s*(?:EUR|€|EGP|SAR|MAD|LBP|DZD))',
+            re.IGNORECASE,
+        )
 
-        for exam in exams:
-            if not isinstance(exam, dict):
-                continue
+        # Find the examfinder section of the page
+        examfinder_section = re.search(
+            r'class="[^"]*examfinder[^"]*"(.*?)(?=class="[^"]*(?:footer|nav|header)',
+            html, re.DOTALL | re.IGNORECASE,
+        )
 
-            # Extract fields (field names may vary)
-            date = (exam.get("eventTimeSpan") or exam.get("startDate") or
-                    exam.get("date") or exam.get("examDate") or "")
-            price = (exam.get("price") or exam.get("priceExternal") or
-                     exam.get("fee") or "")
-            location = (exam.get("locationName") or exam.get("location") or
-                        exam.get("city") or "")
-            status = (exam.get("status") or exam.get("availability") or "")
-            booking_url = (exam.get("bookingUrl") or exam.get("bookingLink") or
-                           exam.get("registrationUrl") or "")
-            exam_name = (exam.get("examName") or exam.get("name") or
-                         exam.get("DESCRIPTION") or "")
-            seats = exam.get("freeSeats", exam.get("availableSeats", ""))
+        search_html = examfinder_section.group(1) if examfinder_section else html
 
-            # Determine availability
-            if status.lower() in ("bookable", "available", "open"):
-                slots = "Verfügbar"
-            elif status.lower() in ("full", "sold_out", "closed"):
-                slots = "Ausgebucht"
-            elif seats:
-                slots = f"{seats} Plätze frei" if str(seats) != "0" else "Ausgebucht"
-            else:
-                slots = "Verfügbar" if booking_url else "Unbekannt"
+        # Look for table rows or list items with dates
+        row_pattern = re.compile(
+            r'<(?:tr|li|div)[^>]*class="[^"]*(?:row|item|result|termin)[^"]*"[^>]*>'
+            r'(.*?)</(?:tr|li|div)>',
+            re.DOTALL | re.IGNORECASE,
+        )
 
-            if price:
-                slots += f" ({price})"
+        rows = row_pattern.findall(search_html)
+        for row in rows:
+            dates = re.findall(r'(\d{1,2}\.\d{1,2}\.\d{4})', row)
+            bookings = booking_pattern.findall(row)
+            prices = price_pattern.findall(row)
 
-            appointment = {
-                "exam_type": exam_type_filter,
-                "exam_date": str(date) if date else "Siehe Website",
-                "exam_time": "",
-                "slots_available": slots,
-                "booking_url": str(booking_url),
-                "location": location,
-            }
-            appointments.append(appointment)
+            valid_dates = [d for d in dates if self._is_recent_date(d)]
 
-            logger.info(
-                f"  Termin: {exam_type_filter} | {date} | {slots} | "
-                f"{location} | {booking_url[:50] if booking_url else 'kein Link'}"
-            )
+            if valid_dates:
+                appt = {
+                    "exam_type": exam_type,
+                    "exam_date": valid_dates[0],
+                    "exam_time": "",
+                    "slots_available": "Verfügbar",
+                    "booking_url": bookings[0] if bookings else "",
+                    "location": "",
+                }
+                if prices:
+                    appt["slots_available"] += f" ({prices[0]})"
+                appointments.append(appt)
+
+        # If no structured rows found, try finding dates in the examfinder area
+        if not appointments:
+            all_dates = re.findall(r'(\d{1,2}\.\d{1,2}\.\d{4})', search_html)
+            all_bookings = booking_pattern.findall(search_html)
+            all_prices = price_pattern.findall(search_html)
+
+            valid_dates = [d for d in all_dates if self._is_recent_date(d)]
+
+            for i, date in enumerate(valid_dates):
+                appt = {
+                    "exam_type": exam_type,
+                    "exam_date": date,
+                    "exam_time": "",
+                    "slots_available": "Verfügbar",
+                    "booking_url": all_bookings[i] if i < len(all_bookings) else "",
+                    "location": "",
+                }
+                if i < len(all_prices):
+                    appt["slots_available"] += f" ({all_prices[i]})"
+                appointments.append(appt)
+
+        # Check for "no exams available" messages
+        no_results_patterns = [
+            r"vorübergehend nicht angezeigt",
+            r"keine.*Termine",
+            r"no.*exam.*available",
+            r"derzeit.*keine",
+            r"aktuell.*keine.*Prüfung",
+        ]
+        for pattern in no_results_patterns:
+            if re.search(pattern, search_html, re.IGNORECASE):
+                logger.info(f"Keine Termine verfügbar für {exam_type}")
+                return []
+
+        if appointments:
+            logger.info(f"DOM: {len(appointments)} Termine für {exam_type} extrahiert")
+        else:
+            logger.info(f"DOM: Keine Termine für {exam_type} im gerenderten HTML")
 
         return appointments
 
+    async def _extract_via_js(self, page, exam_type: str) -> list[dict]:
+        """
+        Try to extract exam data by querying the rendered DOM via JavaScript.
+        This catches data that regex might miss.
+        """
+        appointments = []
+        try:
+            data = await page.evaluate("""
+                () => {
+                    const results = [];
+
+                    // Look for examfinder rendered elements
+                    const selectors = [
+                        '.examfinder-result',
+                        '.examfinder-exam',
+                        '[class*="examfinder"] .row',
+                        '[class*="examfinder"] tr',
+                        '.event-list-item',
+                        '.pr-termin',
+                        '.content-box table tr',
+                        '.mod_examfinder .row',
+                    ];
+
+                    for (const sel of selectors) {
+                        const elements = document.querySelectorAll(sel);
+                        for (const el of elements) {
+                            const text = el.textContent || '';
+                            const links = el.querySelectorAll('a[href]');
+                            const bookingLink = Array.from(links)
+                                .map(a => a.href)
+                                .find(h => h.includes('anmeldung') || h.includes('book') ||
+                                           h.includes('anm') || h.includes('regist')) || '';
+
+                            const dateMatch = text.match(/(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/);
+                            const priceMatch = text.match(/(\\d{2,4}[.,]?\\d{0,2}\\s*(?:EUR|€|EGP|SAR|MAD|LBP|DZD))/i);
+
+                            if (dateMatch) {
+                                results.push({
+                                    date: dateMatch[1],
+                                    price: priceMatch ? priceMatch[1] : '',
+                                    text: text.trim().substring(0, 300),
+                                    bookingUrl: bookingLink,
+                                });
+                            }
+                        }
+                    }
+
+                    // Check for "no results" messages
+                    const bodyText = document.body.textContent || '';
+                    if (bodyText.includes('vorübergehend nicht angezeigt') ||
+                        bodyText.includes('keine Termine') ||
+                        bodyText.includes('derzeit keine')) {
+                        results.push({noResults: true});
+                    }
+
+                    return results;
+                }
+            """)
+
+            for item in data:
+                if item.get("noResults"):
+                    logger.info(f"JS: Keine Termine für {exam_type}")
+                    return []
+
+                date_str = item.get("date", "")
+                if date_str and self._is_recent_date(date_str):
+                    appt = {
+                        "exam_type": exam_type,
+                        "exam_date": date_str,
+                        "exam_time": "",
+                        "slots_available": "Verfügbar",
+                        "booking_url": item.get("bookingUrl", ""),
+                        "location": "",
+                    }
+                    if item.get("price"):
+                        appt["slots_available"] += f" ({item['price']})"
+                    appointments.append(appt)
+
+            if appointments:
+                logger.info(f"JS: {len(appointments)} Termine für {exam_type}")
+
+        except Exception as e:
+            logger.warning(f"JS-Extraktion fehlgeschlagen: {e}")
+
+        return appointments
+
+    @staticmethod
+    def _is_recent_date(date_str: str) -> bool:
+        """Check if a date string (DD.MM.YYYY) is not too old."""
+        try:
+            parts = date_str.split(".")
+            if len(parts) != 3:
+                return False
+            year = int(parts[2])
+            return year >= 2025
+        except (ValueError, IndexError):
+            return False
+
     async def scrape_city(self, country_code: str, city: str) -> list[dict]:
-        """Scrape all exam appointments for a city using the API."""
+        """Scrape all exam appointments for a city."""
         exam_urls = get_exam_urls(country_code, city)
         if not exam_urls:
             return []
+
+        # Warm up session (get cookies, accept consent) before scraping
+        await self._warm_up_session(country_code)
 
         all_appointments = []
 
@@ -259,19 +444,18 @@ class GoetheScraperManager:
             exam_type = url_info["exam_type"]
             page_type = url_info["page_type"]
 
-            # Only scrape .cfm exam detail pages (they have the API)
             if page_type != "exam_detail":
                 continue
 
-            raw_appointments = await self._extract_api_data(url, exam_type)
+            raw_appointments = await self._scrape_exam_page(url, exam_type)
 
             for appt in raw_appointments:
                 appt["country_code"] = country_code
                 appt["city"] = city
                 all_appointments.append(appt)
 
-            # Small delay between pages
-            await asyncio.sleep(random.uniform(1, 2))
+            # Delay between pages to avoid rate limiting
+            await asyncio.sleep(random.uniform(1.5, 3.0))
 
         # Deduplicate
         seen = set()

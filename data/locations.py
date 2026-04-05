@@ -98,7 +98,7 @@ def get_exam_urls(country_code: str, city: str) -> list[dict]:
     base = city_info["base_url"]
     urls = []
 
-    # Individual exam type pages (.cfm) — contain the examfinder API
+    # Individual exam type pages (.cfm — these contain the examfinder widget)
     for exam_type, suffix in EXAM_URL_SUFFIXES.items():
         urls.append({
             "url": f"{base}/{suffix}.cfm",
