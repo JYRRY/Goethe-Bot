@@ -60,8 +60,8 @@ HELP_TEXT = (
 APPOINTMENT_ALERT = (
     "🔔 *Neuer B2\\-Prüfungstermin verfügbar\\!*\n\n"
     "📅 Datum: {date}\n"
-    "🕐 Uhrzeit: {time}\n"
     "📍 Standort: {city}, {country}\n"
+    "📝 Prüfungsteile: {exam_parts}\n"
     "📊 Verfügbarkeit: {slots}\n"
 )
 

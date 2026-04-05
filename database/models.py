@@ -75,6 +75,24 @@ async def init_db():
         await db.execute(CREATE_SUBSCRIPTIONS_TABLE)
         await db.execute(CREATE_APPOINTMENTS_TABLE)
         await db.execute(CREATE_ALERT_HISTORY_TABLE)
+
+        # Migrations for existing databases
+        try:
+            await db.execute(
+                "ALTER TABLE appointments ADD COLUMN exam_parts TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass  # Column already exists
+
+        # Migrate old "Kairo" subscriptions to "Dokki"
+        try:
+            await db.execute(
+                "UPDATE subscriptions SET city='Dokki' "
+                "WHERE city='Kairo' AND country_code='eg'"
+            )
+        except Exception:
+            pass
+
         await db.commit()
         logger.info("Datenbank initialisiert.")
     finally:

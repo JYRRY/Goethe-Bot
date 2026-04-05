@@ -6,8 +6,9 @@ Strategy:
 2. Accept cookie consent banner first
 3. Navigate to each exam .cfm page
 4. Wait for JavaScript to render exam data into the DOM
-5. Extract dates, prices, booking links from rendered HTML
-6. If Firefox fails, fall back to Chromium
+5. Extract dates, location, exam parts, prices, booking links from rendered HTML
+6. Filter out fully booked entries and past dates
+7. Filter by location (e.g. Dokki vs Hurghada on same page)
 """
 
 import asyncio
@@ -27,20 +28,15 @@ DEBUG_DIR = "/app/debug"
 
 # Cookie consent button selectors — tried in order
 COOKIE_ACCEPT_SELECTORS = [
-    # Cookiebot
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
     "#CybotCookiebotDialogBodyButtonAccept",
-    # OneTrust
     "#onetrust-accept-btn-handler",
-    # Generic German
     "button:has-text('Alle akzeptieren')",
     "button:has-text('Alle Cookies akzeptieren')",
     "button:has-text('Akzeptieren')",
     "a:has-text('Alle akzeptieren')",
-    # Generic English
     "button:has-text('Accept all')",
     "button:has-text('Accept')",
-    # CSS class patterns
     ".cookie-consent__accept-all",
     ".cc-btn.cc-allow",
     "button[data-cookie-accept]",
@@ -54,7 +50,7 @@ class GoetheScraperManager:
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
-        self._browser_type = "firefox"  # Firefox first (better anti-detection)
+        self._browser_type = "firefox"
         self._session_ready = False
 
     # ------------------------------------------------------------------
@@ -65,11 +61,9 @@ class GoetheScraperManager:
         os.makedirs(DEBUG_DIR, exist_ok=True)
         self._playwright = await async_playwright().start()
 
-        # Try Firefox first, fall back to Chromium
         try:
             self._browser = await self._playwright.firefox.launch(
-                headless=True,
-                args=[],
+                headless=True, args=[],
             )
             self._browser_type = "firefox"
             logger.info("Scraper gestartet mit Firefox.")
@@ -78,10 +72,8 @@ class GoetheScraperManager:
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
+                    "--no-sandbox", "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage", "--disable-gpu",
                     "--disable-blink-features=AutomationControlled",
                 ],
             )
@@ -91,7 +83,6 @@ class GoetheScraperManager:
         await self._create_context()
 
     async def _create_context(self):
-        """Create a fresh browser context with realistic settings."""
         if self._context:
             try:
                 await self._context.close()
@@ -105,8 +96,7 @@ class GoetheScraperManager:
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) "
                 "Gecko/20100101 Firefox/132.0"
-                if self._browser_type == "firefox"
-                else
+                if self._browser_type == "firefox" else
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/131.0.0.0 Safari/537.36"
@@ -129,14 +119,12 @@ class GoetheScraperManager:
     # ------------------------------------------------------------------
 
     async def _apply_stealth(self, page: Page):
-        """Apply stealth patches to avoid bot detection."""
         try:
             await stealth_async(page)
         except Exception as e:
-            logger.debug(f"Stealth-Patch fehlgeschlagen (nicht kritisch): {e}")
+            logger.debug(f"Stealth-Patch fehlgeschlagen: {e}")
 
     async def _try_accept_cookies(self, page: Page) -> bool:
-        """Click cookie consent accept button if visible."""
         for selector in COOKIE_ACCEPT_SELECTORS:
             try:
                 loc = page.locator(selector).first
@@ -150,10 +138,6 @@ class GoetheScraperManager:
         return False
 
     async def _ensure_session(self, country_code: str):
-        """
-        Visit a Goethe page once per context to establish cookies & session.
-        This prevents 403 on subsequent API calls made by the page JS.
-        """
         if self._session_ready:
             return
 
@@ -177,15 +161,12 @@ class GoetheScraperManager:
                 logger.warning(f"Warmup-Status {resp.status}, versuche Hauptseite...")
                 await page.goto(
                     "https://www.goethe.de/de/index.html",
-                    wait_until="networkidle",
-                    timeout=30000,
+                    wait_until="networkidle", timeout=30000,
                 )
 
-            # Wait and accept cookies
             await page.wait_for_timeout(2000)
             await self._try_accept_cookies(page)
 
-            # Save debug info
             try:
                 await page.screenshot(path=os.path.join(DEBUG_DIR, "warmup.png"))
             except Exception:
@@ -196,7 +177,6 @@ class GoetheScraperManager:
 
         except Exception as e:
             logger.warning(f"Session-Warmup Fehler: {e}")
-            # Continue anyway — some pages might still work
             self._session_ready = True
         finally:
             await page.close()
@@ -206,10 +186,6 @@ class GoetheScraperManager:
     # ------------------------------------------------------------------
 
     async def _scrape_single_page(self, url: str, exam_type: str) -> list[dict]:
-        """
-        Load one exam .cfm page, wait for JS to render, extract data from DOM.
-        Returns list of appointment dicts.
-        """
         page = await self._context.new_page()
         await self._apply_stealth(page)
 
@@ -220,26 +196,14 @@ class GoetheScraperManager:
             page_status = resp.status if resp else 0
             logger.info(f"Seiten-Status: {page_status} für {exam_type}")
 
-            if page_status == 404:
-                logger.info(f"Seite nicht gefunden: {url}")
+            if page_status in (404, 403):
+                logger.warning(f"Seite {page_status}: {url}")
                 return []
 
-            if page_status == 403:
-                logger.warning(f"Seite blockiert (403): {url}")
-                return []
-
-            # Accept cookies if banner shows up on this page too
             await page.wait_for_timeout(2000)
             await self._try_accept_cookies(page)
 
-            # Wait for JavaScript to render exam data.
-            # The page has Handlebars templates that get filled after the
-            # examfinder REST API call completes.
-            # We wait for specific DOM elements that indicate rendering is done.
-
-            rendered = False
-
-            # Strategy A: Wait for examfinder-specific elements
+            # Wait for examfinder widget to render
             exam_selectors = [
                 "[class*='examfinder'] table",
                 "[class*='examfinder'] .row",
@@ -252,23 +216,19 @@ class GoetheScraperManager:
             for sel in exam_selectors:
                 try:
                     await page.wait_for_selector(sel, timeout=5000)
-                    rendered = True
                     logger.info(f"Widget gerendert ({sel}) für {exam_type}")
                     break
                 except Exception:
                     continue
-
-            if not rendered:
-                # Strategy B: Wait for networkidle — all JS should be done
+            else:
                 try:
                     await page.wait_for_load_state("networkidle", timeout=15000)
                 except Exception:
                     pass
-                # Extra time for late rendering
                 await page.wait_for_timeout(5000)
 
-            # Save debug screenshot + HTML
-            safe_name = f"{exam_type}".replace(" ", "_")
+            # Save debug info
+            safe_name = exam_type.replace(" ", "_")
             try:
                 await page.screenshot(
                     path=os.path.join(DEBUG_DIR, f"page_{safe_name}.png"),
@@ -284,22 +244,18 @@ class GoetheScraperManager:
             except Exception:
                 pass
 
-            # --- Extract data ---
-            # Method 1: JavaScript DOM query (most reliable)
+            # Extract data
             appointments = await self._js_extract(page, exam_type)
 
-            # Method 2: Regex on rendered HTML (fallback)
             if not appointments:
                 appointments = self._regex_extract(html_content, exam_type)
 
-            # Method 3: Check if the page says "no appointments"
             if not appointments:
                 no_data = await self._check_no_results(page)
                 if no_data:
                     logger.info(f"Seite meldet: keine Termine für {exam_type}")
                 else:
-                    logger.info(f"Keine Termine gefunden für {exam_type} (unklar warum)")
-                    # Log a snippet of visible text for debugging
+                    logger.info(f"Keine Termine gefunden für {exam_type}")
                     try:
                         visible_text = await page.evaluate(
                             "() => document.body.innerText.substring(0, 1000)"
@@ -317,24 +273,74 @@ class GoetheScraperManager:
             await page.close()
 
     async def _js_extract(self, page: Page, exam_type: str) -> list[dict]:
-        """Extract exam data from DOM using JavaScript evaluation."""
+        """Extract exam data from DOM via JavaScript."""
         try:
             raw = await page.evaluate("""
                 () => {
                     const results = [];
-                    const dateRegex = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/g;
-                    const dateRegexSingle = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/;
+                    const dateRegex = /(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/;
                     const priceRegex = /(\\d{2,4}[.,]?\\d{0,2}\\s*(?:EUR|€|EGP|SAR|MAD|LBP|DZD|USD))/i;
-                    const timeRegex = /(\\d{1,2}[:.:]\\d{2})\\s*(?:Uhr|h)?/i;
 
-                    // Today's date for filtering past exams
+                    // Today for filtering
                     const now = new Date();
                     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
                     function isDateInFuture(dateStr) {
                         const [dd, mm, yyyy] = dateStr.split('.').map(Number);
-                        const examDate = new Date(yyyy, mm - 1, dd);
-                        return examDate >= today;
+                        return new Date(yyyy, mm - 1, dd) >= today;
+                    }
+
+                    // Known location names to extract from text
+                    const locationKeywords = ['dokki', 'hurghada', 'alexandria',
+                        'casablanca', 'rabat', 'algier', 'riad', 'dschidda',
+                        'jeddah', 'beirut', 'kairo', 'cairo'];
+
+                    // Exam part keywords
+                    const partKeywords = {
+                        'schriftlich': 'Schriftlich',
+                        'mündlich': 'Mündlich',
+                        'mundlich': 'Mündlich',
+                        'lesen': 'Lesen',
+                        'hören': 'Hören',
+                        'horen': 'Hören',
+                        'schreiben': 'Schreiben',
+                        'sprechen': 'Sprechen',
+                    };
+
+                    // Fully booked keywords — skip these
+                    const bookedKeywords = ['ausgebucht', 'fully booked',
+                        'belegt', 'warteliste', 'sold out'];
+
+                    function extractLocation(text) {
+                        const lower = text.toLowerCase();
+                        for (const kw of locationKeywords) {
+                            if (lower.includes(kw)) {
+                                return kw.charAt(0).toUpperCase() + kw.slice(1);
+                            }
+                        }
+                        return '';
+                    }
+
+                    function extractParts(text) {
+                        const lower = text.toLowerCase();
+                        const found = [];
+                        for (const [kw, label] of Object.entries(partKeywords)) {
+                            if (lower.includes(kw)) {
+                                // If we find Schriftlich, don't also add Lesen/Hören/Schreiben
+                                if (['lesen', 'hören', 'horen', 'schreiben'].includes(kw) &&
+                                    lower.includes('schriftlich')) continue;
+                                // If we find Mündlich, don't also add Sprechen
+                                if (kw === 'sprechen' && (lower.includes('mündlich') ||
+                                    lower.includes('mundlich'))) continue;
+                                if (!found.includes(label)) found.push(label);
+                            }
+                        }
+                        return found.join(', ');
+                    }
+
+                    function isFullyBooked(text) {
+                        const lower = text.toLowerCase();
+                        return bookedKeywords.some(kw => lower.includes(kw));
                     }
 
                     const rowSelectors = [
@@ -362,28 +368,27 @@ class GoetheScraperManager:
                             const text = (el.textContent || '').trim();
                             if (text.length < 5) continue;
 
-                            const dateMatch = text.match(dateRegexSingle);
+                            const dateMatch = text.match(dateRegex);
                             if (!dateMatch) continue;
 
                             const date = dateMatch[1];
-
-                            // Skip past dates
                             if (!isDateInFuture(date)) continue;
 
-                            // Deduplicate
-                            if (seen.has(date)) continue;
-                            seen.add(date);
+                            // Skip fully booked entries
+                            if (isFullyBooked(text)) continue;
 
-                            // Remove all dates from text, THEN search for time
-                            // This prevents "06.02" from date "06.02.2026" being matched as time
-                            const textWithoutDates = text.replace(dateRegex, '');
-                            const timeMatch = textWithoutDates.match(timeRegex);
-
+                            const location = extractLocation(text);
+                            const examParts = extractParts(text);
                             const priceMatch = text.match(priceRegex);
 
+                            // Deduplicate by (date, location, examParts)
+                            const key = date + '|' + location + '|' + examParts;
+                            if (seen.has(key)) continue;
+                            seen.add(key);
+
                             // Find booking link
-                            const links = el.querySelectorAll('a[href]');
                             let bookingUrl = '';
+                            const links = el.querySelectorAll('a[href]');
                             for (const a of links) {
                                 const href = a.href || '';
                                 if (href.includes('anmeldung') || href.includes('anm') ||
@@ -394,34 +399,35 @@ class GoetheScraperManager:
                                 }
                             }
 
-                            // Check availability text
-                            const lower = text.toLowerCase();
-                            let status = 'Verfügbar';
-                            if (lower.includes('ausgebucht') || lower.includes('fully booked') ||
-                                lower.includes('belegt') || lower.includes('warteliste')) {
-                                status = 'Ausgebucht';
-                            }
-
                             results.push({
                                 date: date,
-                                time: timeMatch ? timeMatch[1] : '',
+                                location: location,
+                                examParts: examParts,
                                 price: priceMatch ? priceMatch[1] : '',
                                 bookingUrl: bookingUrl,
-                                status: status,
-                                snippet: text.substring(0, 200),
+                                snippet: text.substring(0, 300),
                             });
                         }
                     }
 
-                    // If no structured rows found, scan the whole page body
+                    // Fallback: scan entire page body
                     if (results.length === 0) {
                         const body = document.body.innerText || '';
                         const allDates = body.match(/(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/g) || [];
 
                         for (const date of allDates) {
                             if (!isDateInFuture(date)) continue;
-                            if (seen.has(date)) continue;
-                            seen.add(date);
+
+                            const key = date + '||';
+                            if (seen.has(key)) continue;
+                            seen.add(key);
+
+                            // Check if nearby text says fully booked
+                            const idx = body.indexOf(date);
+                            const nearby = body.substring(
+                                Math.max(0, idx - 200), idx + 200
+                            ).toLowerCase();
+                            if (bookedKeywords.some(kw => nearby.includes(kw))) continue;
 
                             let bookingUrl = '';
                             const allLinks = document.querySelectorAll('a[href]');
@@ -433,12 +439,16 @@ class GoetheScraperManager:
                                 }
                             }
 
+                            const nearbyText = body.substring(
+                                Math.max(0, idx - 300), idx + 300
+                            );
+
                             results.push({
                                 date: date,
-                                time: '',
+                                location: extractLocation(nearbyText),
+                                examParts: extractParts(nearbyText),
                                 price: '',
                                 bookingUrl: bookingUrl,
-                                status: 'Verfügbar',
                                 snippet: '',
                             });
                         }
@@ -453,8 +463,9 @@ class GoetheScraperManager:
                 appt = {
                     "exam_type": exam_type,
                     "exam_date": item["date"],
-                    "exam_time": item.get("time", ""),
-                    "slots_available": item.get("status", "Verfügbar"),
+                    "location": item.get("location", ""),
+                    "exam_parts": item.get("examParts", ""),
+                    "slots_available": "Verfügbar",
                     "booking_url": item.get("bookingUrl", ""),
                 }
                 price = item.get("price", "")
@@ -464,7 +475,8 @@ class GoetheScraperManager:
                 appointments.append(appt)
                 logger.info(
                     f"  Gefunden: {exam_type} | {item['date']} | "
-                    f"{item.get('time', '')} | {item.get('status', '')} | "
+                    f"Ort={item.get('location', '?')} | "
+                    f"Teile={item.get('examParts', '?')} | "
                     f"{item.get('snippet', '')[:80]}"
                 )
 
@@ -479,23 +491,22 @@ class GoetheScraperManager:
 
     def _regex_extract(self, html: str, exam_type: str) -> list[dict]:
         """Fallback: extract exam dates from rendered HTML via regex."""
+        from datetime import date as date_cls
         appointments = []
         seen_dates = set()
 
-        # Find the examfinder section if possible
         ef_match = re.search(
             r'class="[^"]*examfinder[^"]*"(.*)',
             html, re.DOTALL | re.IGNORECASE,
         )
         search_area = ef_match.group(1)[:50000] if ef_match else html
 
-        # Remove script/style/nav/footer to avoid false positives
+        # Clean out non-content areas
         search_area = re.sub(r'<script[^>]*>.*?</script>', '', search_area, flags=re.DOTALL)
         search_area = re.sub(r'<style[^>]*>.*?</style>', '', search_area, flags=re.DOTALL)
         search_area = re.sub(r'<nav[^>]*>.*?</nav>', '', search_area, flags=re.DOTALL)
         search_area = re.sub(r'<footer[^>]*>.*?</footer>', '', search_area, flags=re.DOTALL)
 
-        # Find dates
         date_pattern = re.compile(r'(\d{1,2}\.\d{1,2}\.\d{4})')
         booking_pattern = re.compile(
             r'href="(https?://[^"]*(?:anmeldung|anm|webshop|book|regist)[^"]*)"',
@@ -505,18 +516,19 @@ class GoetheScraperManager:
             r'(\d{2,4}[.,]?\d{0,2}\s*(?:EUR|€|EGP|SAR|MAD|LBP|DZD|USD))',
             re.IGNORECASE,
         )
+        booked_pattern = re.compile(
+            r'ausgebucht|belegt|warteliste|fully booked|sold out',
+            re.IGNORECASE,
+        )
 
+        today = date_cls.today()
         all_dates = date_pattern.findall(search_area)
         all_bookings = booking_pattern.findall(search_area)
         all_prices = price_pattern.findall(search_area)
 
-        from datetime import date as date_cls
-        today = date_cls.today()
-
         for date_str in all_dates:
             if date_str in seen_dates:
                 continue
-            # Filter past dates
             try:
                 parts = date_str.split(".")
                 exam_date = date_cls(int(parts[2]), int(parts[1]), int(parts[0]))
@@ -525,11 +537,18 @@ class GoetheScraperManager:
             except (ValueError, IndexError):
                 continue
 
+            # Check if nearby text says fully booked
+            idx = search_area.find(date_str)
+            nearby = search_area[max(0, idx - 200):idx + 200]
+            if booked_pattern.search(nearby):
+                continue
+
             seen_dates.add(date_str)
             appt = {
                 "exam_type": exam_type,
                 "exam_date": date_str,
-                "exam_time": "",
+                "location": "",
+                "exam_parts": "",
                 "slots_available": "Verfügbar",
                 "booking_url": all_bookings[0] if all_bookings else "",
             }
@@ -544,7 +563,6 @@ class GoetheScraperManager:
         return appointments
 
     async def _check_no_results(self, page: Page) -> bool:
-        """Check if the page explicitly says there are no exam dates."""
         try:
             text = await page.evaluate(
                 "() => (document.body.innerText || '').toLowerCase()"
@@ -574,8 +592,11 @@ class GoetheScraperManager:
             logger.warning(f"Keine URLs für {city} ({country_code})")
             return []
 
-        # Establish cookies/session before scraping exam pages
         await self._ensure_session(country_code)
+
+        # Get location filter for this city (e.g. "dokki" or "hurghada")
+        city_info = LOCATIONS.get(country_code, {}).get("cities", {}).get(city, {})
+        location_filter = city_info.get("location_filter", "").lower()
 
         all_appointments = []
 
@@ -589,19 +610,29 @@ class GoetheScraperManager:
             appts = await self._scrape_single_page(url, exam_type)
 
             for appt in appts:
+                # Apply location filter if set
+                if location_filter:
+                    appt_location = appt.get("location", "").lower()
+                    if appt_location and location_filter not in appt_location:
+                        logger.debug(
+                            f"  Übersprungen (Ort-Filter): {appt['exam_date']} "
+                            f"Ort={appt.get('location', '')} != {city}"
+                        )
+                        continue
+
                 appt["country_code"] = country_code
                 appt["city"] = city
                 all_appointments.append(appt)
 
-            # Polite delay between pages
             await asyncio.sleep(random.uniform(2.0, 4.0))
 
-        # Deduplicate by (country, city, exam_type, date)
+        # Deduplicate
         seen = set()
         unique = []
         for appt in all_appointments:
             key = (appt["country_code"], appt["city"],
-                   appt["exam_type"], appt["exam_date"])
+                   appt["exam_type"], appt["exam_date"],
+                   appt.get("exam_parts", ""))
             if key not in seen:
                 seen.add(key)
                 unique.append(appt)
@@ -610,5 +641,4 @@ class GoetheScraperManager:
         return unique
 
 
-# Singleton
 scraper_manager = GoetheScraperManager()

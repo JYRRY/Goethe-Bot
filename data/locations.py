@@ -21,9 +21,15 @@ LOCATIONS = {
     "eg": {
         "name": "Ägypten",
         "cities": {
-            "Kairo": {
+            "Dokki": {
                 "base_url": "https://www.goethe.de/ins/eg/de/sta/kai/prf",
-                "note": "Kairo (Dokki) und Hurghada",
+                "note": "Kairo (Dokki)",
+                "location_filter": "dokki",
+            },
+            "Hurghada": {
+                "base_url": "https://www.goethe.de/ins/eg/de/sta/kai/prf",
+                "note": "Hurghada",
+                "location_filter": "hurghada",
             },
             "Alexandria": {
                 "base_url": "https://www.goethe.de/ins/eg/de/sta/alx/prf",

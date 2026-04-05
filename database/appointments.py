@@ -6,10 +6,10 @@ logger = logging.getLogger(__name__)
 
 
 def compute_appointment_hash(
-    country_code: str, city: str, exam_type: str, exam_date: str, exam_time: str
+    country_code: str, city: str, exam_type: str, exam_date: str, exam_parts: str
 ) -> str:
     """Generate a unique hash for an appointment."""
-    key = f"{country_code}:{city}:{exam_type}:{exam_date}:{exam_time}"
+    key = f"{country_code}:{city}:{exam_type}:{exam_date}:{exam_parts}"
     return hashlib.sha256(key.encode()).hexdigest()
 
 
@@ -18,7 +18,7 @@ async def upsert_appointment(
     city: str,
     exam_type: str,
     exam_date: str,
-    exam_time: str,
+    exam_parts: str,
     slots_available: str,
     booking_url: str,
 ) -> tuple[bool, str]:
@@ -27,7 +27,7 @@ async def upsert_appointment(
     Returns (is_new, hash) where is_new indicates if this is a newly discovered appointment.
     """
     appt_hash = compute_appointment_hash(
-        country_code, city, exam_type, exam_date, exam_time
+        country_code, city, exam_type, exam_date, exam_parts
     )
     db = await get_db()
     try:
@@ -54,15 +54,15 @@ async def upsert_appointment(
                 """
                 INSERT INTO appointments
                 (country_code, city, exam_type, exam_date, exam_time,
-                 slots_available, booking_url, hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 exam_parts, slots_available, booking_url, hash)
+                VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)
                 """,
                 (
                     country_code,
                     city,
                     exam_type,
                     exam_date,
-                    exam_time,
+                    exam_parts,
                     slots_available,
                     booking_url,
                     appt_hash,

@@ -10,7 +10,6 @@ from database.subscriptions import get_subscribers_for_appointment
 
 logger = logging.getLogger(__name__)
 
-# Telegram rate limit: ~30 messages/second
 SEND_DELAY = 0.05  # 50ms between messages
 
 
@@ -45,13 +44,13 @@ async def notify_new_appointment(bot: Bot, appointment: dict, appt_hash: str):
         if await was_user_alerted(user_id, appt_hash):
             continue
 
-        # Build message
         fmt_kwargs = {
-            "exam_type": _escape_md(exam_type),
             "date": _escape_md(appointment.get("exam_date", "N/A")),
-            "time": _escape_md(appointment.get("exam_time", "") or "N/A"),
             "city": _escape_md(city),
             "country": _escape_md(country_name),
+            "exam_parts": _escape_md(
+                appointment.get("exam_parts", "") or "Nicht angegeben"
+            ),
             "slots": _escape_md(appointment.get("slots_available", "Unbekannt")),
         }
 

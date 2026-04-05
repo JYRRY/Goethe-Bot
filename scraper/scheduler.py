@@ -41,7 +41,7 @@ async def scrape_job(bot: Bot):
                     city=appt["city"],
                     exam_type=appt["exam_type"],
                     exam_date=appt["exam_date"],
-                    exam_time=appt.get("exam_time", ""),
+                    exam_parts=appt.get("exam_parts", ""),
                     slots_available=appt.get("slots_available", ""),
                     booking_url=appt.get("booking_url", ""),
                 )
