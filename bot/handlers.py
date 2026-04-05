@@ -10,7 +10,6 @@ from bot import messages
 from bot.keyboards import (
     country_keyboard,
     city_keyboard,
-    exam_type_keyboard,
     subscription_delete_keyboard,
 )
 from bot.middleware import require_membership
@@ -65,7 +64,6 @@ async def my_subs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "name", sub["country_code"]
         )
         text += messages.SUBSCRIPTION_ITEM.format(
-            exam_type=sub["exam_type"],
             city=sub["city"],
             country=country_name,
         ) + "\n"
@@ -111,28 +109,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=city_keyboard(country_code),
         )
 
-    elif data.startswith("city:"):
+    elif data.startswith("subscribe:"):
+        # Direct subscription: subscribe:country:city:B2
         parts = data.split(":")
         country_code = parts[1]
         city = parts[2]
-        await query.edit_message_text(
-            messages.SELECT_EXAM,
-            parse_mode="MarkdownV2",
-            reply_markup=exam_type_keyboard(country_code, city),
-        )
-
-    elif data.startswith("exam:"):
-        parts = data.split(":")
-        country_code = parts[1]
-        city = parts[2]
-        exam_type = parts[3]
+        exam_type = parts[3]  # Always B2
 
         await add_subscription(user.id, country_code, city, exam_type)
 
         country_name = LOCATIONS.get(country_code, {}).get("name", country_code)
         await query.edit_message_text(
             messages.SUBSCRIPTION_ADDED.format(
-                country=country_name, city=city, exam_type=exam_type
+                country=country_name, city=city,
             ),
             parse_mode="MarkdownV2",
         )

@@ -1,12 +1,12 @@
-"""German message templates for JYRY AI bot."""
+"""German message templates for JYRY AI bot — B2 only."""
 
 from bot.config import REQUIRED_CHANNEL_ID
 
 WELCOME = (
-    "Willkommen bei *JYRY AI* \\- deinem Goethe\\-Institut Terminbenachrichtigungsbot\\! 🎓\n\n"
-    "Ich überwache verfügbare Prüfungstermine am Goethe\\-Institut und "
+    "Willkommen bei *JYRY AI* \\- deinem Goethe\\-Institut B2 Terminbenachrichtigungsbot\\! 🎓\n\n"
+    "Ich überwache verfügbare *B2\\-Prüfungstermine* am Goethe\\-Institut und "
     "benachrichtige dich sofort, wenn neue Plätze frei werden\\.\n\n"
-    "Wähle zuerst dein *Land* aus:"
+    "Wähle dein *Land* aus:"
 )
 
 CHANNEL_REQUIRED = (
@@ -15,27 +15,25 @@ CHANNEL_REQUIRED = (
     "Danach drücke /start erneut\\."
 )
 
-SELECT_CITY = "Wähle deine *Stadt* aus:"
-
-SELECT_EXAM = "Wähle den *Prüfungstyp* aus:"
+SELECT_CITY = "Wähle deine *Stadt* aus \\(B2\\-Prüfung\\):"
 
 SUBSCRIPTION_ADDED = (
     "✅ *Abo erstellt\\!*\n\n"
     "📍 Land: {country}\n"
     "🏙 Stadt: {city}\n"
-    "📝 Prüfung: {exam_type}\n\n"
-    "Du wirst benachrichtigt, sobald neue Termine verfügbar sind\\.\n\n"
+    "📝 Prüfung: *B2*\n\n"
+    "Du wirst benachrichtigt, sobald neue B2\\-Termine verfügbar sind\\.\n\n"
     "Weitere Optionen:\n"
-    "/start \\- Neues Abo hinzufügen\n"
+    "/start \\- Weitere Stadt hinzufügen\n"
     "/meineabos \\- Meine Abos anzeigen\n"
     "/stop \\- Alle Benachrichtigungen stoppen"
 )
 
 NO_SUBSCRIPTIONS = "Du hast noch keine aktiven Abos\\. Drücke /start, um eines zu erstellen\\."
 
-MY_SUBSCRIPTIONS_HEADER = "📋 *Deine aktiven Abos:*\n\n"
+MY_SUBSCRIPTIONS_HEADER = "📋 *Deine aktiven B2\\-Abos:*\n\n"
 
-SUBSCRIPTION_ITEM = "• {exam_type} in {city} \\({country}\\)"
+SUBSCRIPTION_ITEM = "• B2 in {city} \\({country}\\)"
 
 SUBSCRIPTION_REMOVED = "🗑 Abo wurde entfernt\\."
 
@@ -46,7 +44,7 @@ ALL_STOPPED = (
 
 HELP_TEXT = (
     "*JYRY AI \\- Hilfe*\n\n"
-    "Dieser Bot überwacht Prüfungstermine am Goethe\\-Institut "
+    "Dieser Bot überwacht *B2\\-Prüfungstermine* am Goethe\\-Institut "
     "und benachrichtigt dich bei neuen verfügbaren Plätzen\\.\n\n"
     "*Befehle:*\n"
     "/start \\- Bot starten / Neues Abo\n"
@@ -56,13 +54,11 @@ HELP_TEXT = (
     "*So funktioniert es:*\n"
     "1\\. Wähle ein Land\n"
     "2\\. Wähle eine Stadt\n"
-    "3\\. Wähle den Prüfungstyp \\(A1\\-C2\\)\n"
-    "4\\. Warte auf Benachrichtigungen\\!"
+    "3\\. Warte auf B2\\-Benachrichtigungen\\!"
 )
 
 APPOINTMENT_ALERT = (
-    "🔔 *Neuer Prüfungstermin verfügbar\\!*\n\n"
-    "📝 Prüfung: *{exam_type}*\n"
+    "🔔 *Neuer B2\\-Prüfungstermin verfügbar\\!*\n\n"
     "📅 Datum: {date}\n"
     "🕐 Uhrzeit: {time}\n"
     "📍 Standort: {city}, {country}\n"

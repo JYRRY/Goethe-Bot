@@ -9,16 +9,12 @@ URL structure discovered from goethe.de:
 """
 
 # Exam type URL suffixes used by Goethe-Institut
+# Currently only monitoring B2
 EXAM_URL_SUFFIXES = {
-    "A1": "gzsd1",   # Goethe-Zertifikat Start Deutsch 1
-    "A2": "gzsd2",   # Goethe-Zertifikat Start Deutsch 2
-    "B1": "gzb1",    # Goethe-Zertifikat B1
     "B2": "gzb2",    # Goethe-Zertifikat B2
-    "C1": "gzc1",    # Goethe-Zertifikat C1
-    "C2": "gzc2",    # Goethe-Zertifikat C2
 }
 
-EXAM_TYPES = ["A1", "A2", "B1", "B2", "C1", "C2"]
+EXAM_TYPES = ["B2"]
 
 # Each city has its own base URL for exams
 LOCATIONS = {
