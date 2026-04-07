@@ -26,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 DEBUG_DIR = "/app/debug"
 
+# Replace currency codes with readable display names
+CURRENCY_DISPLAY = {
+    "MAD": "DH",
+    "EUR": "€",
+    "USD": "$",
+}
+
 # Cookie consent button selectors — tried in order
 COOKIE_ACCEPT_SELECTORS = [
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
@@ -155,16 +162,16 @@ class GoetheScraperManager:
                 warmup_url = f"https://www.goethe.de/ins/{country_code}/de/index.html"
 
             logger.info(f"Session aufwärmen: {warmup_url}")
-            resp = await page.goto(warmup_url, wait_until="networkidle", timeout=45000)
+            resp = await page.goto(warmup_url, wait_until="networkidle", timeout=25000)
 
             if resp and resp.status >= 400:
                 logger.warning(f"Warmup-Status {resp.status}, versuche Hauptseite...")
                 await page.goto(
                     "https://www.goethe.de/de/index.html",
-                    wait_until="networkidle", timeout=30000,
+                    wait_until="networkidle", timeout=20000,
                 )
 
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(1000)
             await self._try_accept_cookies(page)
 
             try:
@@ -191,7 +198,7 @@ class GoetheScraperManager:
 
         try:
             logger.info(f"Lade Seite: {url} ({exam_type})")
-            resp = await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+            resp = await page.goto(url, wait_until="domcontentloaded", timeout=25000)
 
             page_status = resp.status if resp else 0
             logger.info(f"Seiten-Status: {page_status} für {exam_type}")
@@ -200,7 +207,7 @@ class GoetheScraperManager:
                 logger.warning(f"Seite {page_status}: {url}")
                 return []
 
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(500)
             await self._try_accept_cookies(page)
 
             # Wait for examfinder widget to render
@@ -215,17 +222,17 @@ class GoetheScraperManager:
 
             for sel in exam_selectors:
                 try:
-                    await page.wait_for_selector(sel, timeout=5000)
+                    await page.wait_for_selector(sel, timeout=2000)
                     logger.info(f"Widget gerendert ({sel}) für {exam_type}")
                     break
                 except Exception:
                     continue
             else:
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)
+                    await page.wait_for_load_state("networkidle", timeout=8000)
                 except Exception:
                     pass
-                await page.wait_for_timeout(5000)
+                await page.wait_for_timeout(1500)
 
             # Save debug info
             safe_name = exam_type.replace(" ", "_")
@@ -469,6 +476,10 @@ class GoetheScraperManager:
 
             appointments = []
             for item in raw:
+                price = item.get("price", "")
+                for code, display in CURRENCY_DISPLAY.items():
+                    price = price.replace(code, display)
+
                 appt = {
                     "exam_type": exam_type,
                     "exam_date": item["date"],
@@ -476,7 +487,7 @@ class GoetheScraperManager:
                     "exam_parts": item.get("examParts", ""),
                     "slots_available": "Verfügbar",
                     "booking_url": item.get("bookingUrl", ""),
-                    "price": item.get("price", ""),
+                    "price": price,
                     "booking_opens": item.get("bookingOpensAt", ""),
                 }
 
@@ -552,6 +563,10 @@ class GoetheScraperManager:
                 continue
 
             seen_dates.add(date_str)
+            price = all_prices[0] if all_prices else ""
+            for code, display in CURRENCY_DISPLAY.items():
+                price = price.replace(code, display)
+
             appt = {
                 "exam_type": exam_type,
                 "exam_date": date_str,
@@ -559,9 +574,9 @@ class GoetheScraperManager:
                 "exam_parts": "",
                 "slots_available": "Verfügbar",
                 "booking_url": all_bookings[0] if all_bookings else "",
+                "price": price,
+                "booking_opens": "",
             }
-            if all_prices:
-                appt["slots_available"] += f" — {all_prices[0]}"
 
             appointments.append(appt)
 
@@ -632,7 +647,7 @@ class GoetheScraperManager:
                 appt["city"] = city
                 all_appointments.append(appt)
 
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+            await asyncio.sleep(random.uniform(0.5, 1.5))
 
         # Deduplicate
         seen = set()

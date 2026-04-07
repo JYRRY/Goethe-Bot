@@ -33,6 +33,15 @@ def city_keyboard(country_code: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
+def announced_appointment_keyboard(appt_hash: str, exam_date: str, booking_opens: str) -> InlineKeyboardMarkup:
+    """Build keyboard with a watch button for an announced appointment."""
+    label = f"🔔 Erinnere mich am {booking_opens}"
+    buttons = [
+        [InlineKeyboardButton(label, callback_data=f"watch:{appt_hash}")]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
 def subscription_delete_keyboard(subscriptions: list[dict]) -> InlineKeyboardMarkup:
     """Build keyboard with delete buttons for each subscription."""
     buttons = []
