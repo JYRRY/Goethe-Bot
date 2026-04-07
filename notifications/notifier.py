@@ -4,6 +4,7 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 from bot import messages
+from bot.keyboards import announced_appointment_keyboard
 from data.locations import LOCATIONS
 from database.appointments import was_user_alerted, record_alert, mark_notified
 from database.subscriptions import get_subscribers_for_appointment
@@ -39,6 +40,13 @@ async def notify_new_appointment(bot: Bot, appointment: dict, appt_hash: str):
 
     country_name = LOCATIONS.get(country_code, {}).get("name", country_code)
 
+    # Build conditional price line
+    price = appointment.get("price", "")
+    price_line = f"💰 Preis: {_escape_md(price)}\n" if price else ""
+
+    booking_url = appointment.get("booking_url", "")
+    booking_opens = appointment.get("booking_opens", "")
+
     sent_count = 0
     for user_id in subscribers:
         if await was_user_alerted(user_id, appt_hash):
@@ -51,22 +59,21 @@ async def notify_new_appointment(bot: Bot, appointment: dict, appt_hash: str):
             "exam_parts": _escape_md(
                 appointment.get("exam_parts", "") or "Nicht angegeben"
             ),
-            "price": _escape_md(
-                appointment.get("price", "") or "Nicht angegeben"
-            ),
+            "price_line": price_line,
             "slots": _escape_md(appointment.get("slots_available", "Unbekannt")),
         }
 
-        booking_url = appointment.get("booking_url", "")
-        booking_opens = appointment.get("booking_opens", "")
+        reply_markup = None
 
         if booking_opens:
             fmt_kwargs["booking_opens"] = _escape_md(booking_opens)
-            if booking_url:
-                fmt_kwargs["booking_url"] = booking_url
-                text = messages.APPOINTMENT_ANNOUNCED_WITH_LINK.format(**fmt_kwargs)
-            else:
-                text = messages.APPOINTMENT_ANNOUNCED.format(**fmt_kwargs)
+            text = messages.APPOINTMENT_ANNOUNCED.format(**fmt_kwargs)
+            # Add watch button for announced appointments
+            reply_markup = announced_appointment_keyboard(
+                appt_hash,
+                appointment.get("exam_date", ""),
+                booking_opens,
+            )
         elif booking_url:
             fmt_kwargs["booking_url"] = booking_url
             text = messages.APPOINTMENT_ALERT_WITH_LINK.format(**fmt_kwargs)
@@ -79,6 +86,7 @@ async def notify_new_appointment(bot: Bot, appointment: dict, appt_hash: str):
                 text=text,
                 parse_mode="MarkdownV2",
                 disable_web_page_preview=True,
+                reply_markup=reply_markup,
             )
             await record_alert(user_id, appt_hash)
             sent_count += 1

@@ -57,6 +57,21 @@ CREATE TABLE IF NOT EXISTS alert_history (
 );
 """
 
+CREATE_BOOKING_WATCHES_TABLE = """
+CREATE TABLE IF NOT EXISTS booking_watches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id BIGINT NOT NULL,
+    appointment_hash TEXT NOT NULL,
+    exam_date TEXT NOT NULL,
+    booking_opens TEXT NOT NULL,
+    city TEXT NOT NULL,
+    country_code TEXT NOT NULL,
+    reminded BOOLEAN DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, appointment_hash)
+);
+"""
+
 
 async def get_db() -> aiosqlite.Connection:
     """Get a database connection."""
@@ -75,11 +90,26 @@ async def init_db():
         await db.execute(CREATE_SUBSCRIPTIONS_TABLE)
         await db.execute(CREATE_APPOINTMENTS_TABLE)
         await db.execute(CREATE_ALERT_HISTORY_TABLE)
+        await db.execute(CREATE_BOOKING_WATCHES_TABLE)
 
         # Migrations for existing databases
         try:
             await db.execute(
                 "ALTER TABLE appointments ADD COLUMN exam_parts TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass  # Column already exists
+
+        try:
+            await db.execute(
+                "ALTER TABLE appointments ADD COLUMN booking_opens TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass  # Column already exists
+
+        try:
+            await db.execute(
+                "ALTER TABLE appointments ADD COLUMN price TEXT DEFAULT ''"
             )
         except Exception:
             pass  # Column already exists

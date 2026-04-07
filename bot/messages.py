@@ -22,11 +22,7 @@ SUBSCRIPTION_ADDED = (
     "📍 Land: {country}\n"
     "🏙 Stadt: {city}\n"
     "📝 Prüfung: *B2*\n\n"
-    "Du wirst benachrichtigt, sobald neue B2\\-Termine verfügbar sind\\.\n\n"
-    "Weitere Optionen:\n"
-    "/start \\- Weitere Stadt hinzufügen\n"
-    "/meineabos \\- Meine Abos anzeigen\n"
-    "/stop \\- Alle Benachrichtigungen stoppen"
+    "Du wirst benachrichtigt, sobald neue B2\\-Termine verfügbar sind\\."
 )
 
 NO_SUBSCRIPTIONS = "Du hast noch keine aktiven Abos\\. Drücke /start, um eines zu erstellen\\."
@@ -62,7 +58,7 @@ APPOINTMENT_ALERT = (
     "📅 Datum: {date}\n"
     "📍 Standort: {city}, {country}\n"
     "📝 Prüfungsteile: {exam_parts}\n"
-    "💰 Preis: {price}\n"
+    "{price_line}"
     "📊 Verfügbarkeit: {slots}\n"
 )
 
@@ -73,14 +69,33 @@ APPOINTMENT_ANNOUNCED = (
     "📅 Datum: {date}\n"
     "📍 Standort: {city}, {country}\n"
     "📝 Prüfungsteile: {exam_parts}\n"
-    "💰 Preis: {price}\n"
+    "{price_line}"
     "📌 Anmeldung ab: {booking_opens}\n\n"
-    "Wir erinnern dich, sobald die Buchung möglich ist\\!"
+    "Möchtest du erinnert werden? Drücke den Button unten\\!"
 )
 
-APPOINTMENT_ANNOUNCED_WITH_LINK = APPOINTMENT_ANNOUNCED.replace(
-    "Wir erinnern dich, sobald die Buchung möglich ist\\!",
-    "[👉 Jetzt buchen\\!]({booking_url})"
+BOOKING_WATCH_CONFIRMED = (
+    "✅ *Erinnerung gesetzt\\!*\n\n"
+    "📅 Termin: {exam_date}\n"
+    "📍 Standort: {city}, {country}\n"
+    "📌 Anmeldung ab: {booking_opens}\n\n"
+    "Du wirst benachrichtigt, sobald die Buchung möglich ist\\."
+)
+
+BOOKING_REMINDER = (
+    "🔔 *Buchung jetzt möglich\\!*\n\n"
+    "📅 Termin: {exam_date}\n"
+    "📍 Standort: {city}, {country}\n\n"
+    "Die Anmeldung für diesen B2\\-Prüfungstermin ist ab heute geöffnet\\! "
+    "Melde dich schnell an\\!"
+)
+
+BOOKING_REMINDER_WITH_LINK = (
+    "🔔 *Buchung jetzt möglich\\!*\n\n"
+    "📅 Termin: {exam_date}\n"
+    "📍 Standort: {city}, {country}\n\n"
+    "Die Anmeldung ist ab heute geöffnet\\!\n\n"
+    "[👉 Jetzt anmelden\\!]({booking_url})"
 )
 
 ERROR_GENERIC = "❌ Ein Fehler ist aufgetreten\\. Bitte versuche es erneut\\."

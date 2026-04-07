@@ -21,6 +21,7 @@ from database.subscriptions import (
     remove_subscription,
     deactivate_all_subscriptions,
 )
+from database.appointments import add_booking_watch, get_appointment_by_hash
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,41 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="MarkdownV2",
             reply_markup=country_keyboard(),
         )
+
+    elif data.startswith("watch:"):
+        appt_hash = data.split(":", 1)[1]
+        appt = await get_appointment_by_hash(appt_hash)
+
+        if appt:
+            booking_opens = appt.get("booking_opens", "") or "Unbekannt"
+
+            await add_booking_watch(
+                user_id=user.id,
+                appt_hash=appt_hash,
+                exam_date=appt.get("exam_date", ""),
+                booking_opens=booking_opens,
+                city=appt.get("city", ""),
+                country_code=appt.get("country_code", ""),
+            )
+
+            country_name = LOCATIONS.get(appt.get("country_code", ""), {}).get(
+                "name", appt.get("country_code", "")
+            )
+
+            from notifications.notifier import _escape_md
+            await query.edit_message_text(
+                messages.BOOKING_WATCH_CONFIRMED.format(
+                    exam_date=_escape_md(appt.get("exam_date", "")),
+                    city=_escape_md(appt.get("city", "")),
+                    country=_escape_md(country_name),
+                    booking_opens=_escape_md(booking_opens),
+                ),
+                parse_mode="MarkdownV2",
+            )
+        else:
+            await query.edit_message_text(
+                messages.ERROR_GENERIC, parse_mode="MarkdownV2"
+            )
 
     elif data.startswith("back:city:"):
         country_code = data.split(":")[2]
