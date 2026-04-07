@@ -323,20 +323,23 @@ class GoetheScraperManager:
 
                     function extractParts(text) {
                         const lower = text.toLowerCase();
+                        // Prefer individual modules over grouped names
+                        const individual = ['lesen', 'hören', 'horen', 'schreiben', 'sprechen'];
+                        const grouped = ['schriftlich', 'mündlich', 'mundlich'];
                         const found = [];
-                        for (const [kw, label] of Object.entries(partKeywords)) {
+                        const hasIndividual = individual.some(kw => lower.includes(kw));
+                        const keywords = hasIndividual ? individual : grouped;
+                        for (const kw of keywords) {
                             if (lower.includes(kw)) {
-                                // If we find Schriftlich, don't also add Lesen/Hören/Schreiben
-                                if (['lesen', 'hören', 'horen', 'schreiben'].includes(kw) &&
-                                    lower.includes('schriftlich')) continue;
-                                // If we find Mündlich, don't also add Sprechen
-                                if (kw === 'sprechen' && (lower.includes('mündlich') ||
-                                    lower.includes('mundlich'))) continue;
-                                if (!found.includes(label)) found.push(label);
+                                const label = partKeywords[kw];
+                                if (label && !found.includes(label)) found.push(label);
                             }
                         }
                         return found.join(', ');
                     }
+
+                    // Booking-opens date extraction
+                    const bookingOpensRegex = /(?:anmeldung|buchbar|registration)\\s*(?:ab|from|:)\\s*(\\d{1,2}\\.\\d{1,2}\\.\\d{4})/i;
 
                     function isFullyBooked(text) {
                         const lower = text.toLowerCase();
@@ -374,12 +377,14 @@ class GoetheScraperManager:
                             const date = dateMatch[1];
                             if (!isDateInFuture(date)) continue;
 
-                            // Skip fully booked entries
-                            if (isFullyBooked(text)) continue;
+                            // Skip fully booked entries (but not "booking opens" entries)
+                            const bookingOpensMatch = text.match(bookingOpensRegex);
+                            if (!bookingOpensMatch && isFullyBooked(text)) continue;
 
                             const location = extractLocation(text);
                             const examParts = extractParts(text);
                             const priceMatch = text.match(priceRegex);
+                            const bookingOpensAt = bookingOpensMatch ? bookingOpensMatch[1] : '';
 
                             // Deduplicate by (date, location, examParts)
                             const key = date + '|' + location + '|' + examParts;
@@ -405,6 +410,7 @@ class GoetheScraperManager:
                                 examParts: examParts,
                                 price: priceMatch ? priceMatch[1] : '',
                                 bookingUrl: bookingUrl,
+                                bookingOpensAt: bookingOpensAt,
                                 snippet: text.substring(0, 300),
                             });
                         }
@@ -426,8 +432,10 @@ class GoetheScraperManager:
                             const idx = body.indexOf(date);
                             const nearby = body.substring(
                                 Math.max(0, idx - 200), idx + 200
-                            ).toLowerCase();
-                            if (bookedKeywords.some(kw => nearby.includes(kw))) continue;
+                            );
+                            const nearbyLower = nearby.toLowerCase();
+                            const fbBookingOpens = nearby.match(bookingOpensRegex);
+                            if (!fbBookingOpens && bookedKeywords.some(kw => nearbyLower.includes(kw))) continue;
 
                             let bookingUrl = '';
                             const allLinks = document.querySelectorAll('a[href]');
@@ -449,6 +457,7 @@ class GoetheScraperManager:
                                 examParts: extractParts(nearbyText),
                                 price: '',
                                 bookingUrl: bookingUrl,
+                                bookingOpensAt: fbBookingOpens ? fbBookingOpens[1] : '',
                                 snippet: '',
                             });
                         }
@@ -467,10 +476,9 @@ class GoetheScraperManager:
                     "exam_parts": item.get("examParts", ""),
                     "slots_available": "Verfügbar",
                     "booking_url": item.get("bookingUrl", ""),
+                    "price": item.get("price", ""),
+                    "booking_opens": item.get("bookingOpensAt", ""),
                 }
-                price = item.get("price", "")
-                if price:
-                    appt["slots_available"] += f" — {price}"
 
                 appointments.append(appt)
                 logger.info(
